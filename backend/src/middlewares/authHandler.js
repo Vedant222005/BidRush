@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
+const con=require('../config/db');
 
-const authMiddleware = (req, res, next) => {
+const authMiddleware = async(req, res, next) => {
   try {
     // Get token from HTTP-only cookie
     const token = req.cookies.token;
@@ -12,6 +13,11 @@ const authMiddleware = (req, res, next) => {
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
+    //Database Check-in (Recommended for Finance/Auctions)
+    const userCheck = await con.query("SELECT id FROM users WHERE id = $1", [decoded.id]);
+    if (userCheck.rows.length === 0) {
+       return res.status(401).json({ message: "User no longer exists." });
+    }
 
     req.user =decoded;
     

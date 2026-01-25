@@ -13,7 +13,7 @@ CREATE TABLE users (
     balance DECIMAL(12,2) DEFAULT 0,
     -- Money locked in active bids that cannot be spent elsewhere
     reserved_balance DECIMAL(12,2) DEFAULT 0, 
-    
+    version INT DEFAULT 1,  
     -- Status & Security
     status user_status DEFAULT 'active',
     is_verified BOOLEAN DEFAULT FALSE,

@@ -9,6 +9,7 @@ CREATE TABLE auctions (
     title VARCHAR(255) NOT NULL,
     description TEXT,
     category VARCHAR(100),
+    version INT DEFAULT 1,  
     
     -- Pricing & Stats
     starting_bid DECIMAL(12,2) NOT NULL,
