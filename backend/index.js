@@ -1,9 +1,13 @@
 const express = require('express');
 const dotenv = require('dotenv');
+const cors = require('cors');
 const authRoutes = require('./src/routes/auth');
 const auctionRoutes = require('./src/routes/auction');
 const bidRoutes = require('./src/routes/bid');
 const cookieParser = require('cookie-parser');
+const { createServer } = require('http');
+const { initSocket } = require('./src/webSocket/socketServer');
+const uploadRoutes = require('./src/routes/upload');
 
 dotenv.config();
 
@@ -76,14 +80,28 @@ dotenv.config();
 // });
 
 const app = express();
+const server = createServer(app);
+
+//initialize socket server
+initSocket(server);
+
 const port = process.env.PORT || 3000;
 app.use(express.json());
 app.use(cookieParser());
 
+// CORS - Allow frontend to make requests with cookies
+app.use(cors({
+  origin: 'http://localhost:5173',  // Frontend URL
+  credentials: true  // Allow cookies
+}));
+
 app.use('/api/auth', authRoutes);
 app.use('/api/auction', auctionRoutes);
 app.use('/api/bids', bidRoutes);
-app.listen(port, () => {
+app.use('/api/upload', uploadRoutes);
+
+//listen on server
+server.listen(port, () => {
   console.log(`server is running on port ${port}`);
 })
 

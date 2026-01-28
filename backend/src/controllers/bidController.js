@@ -1,4 +1,5 @@
 const con=require('../config/db');  
+const { emitNewBid } = require('../webSocket/socketServer');
 
 //with pagination
 const getBids = async (req, res) => {
@@ -128,6 +129,15 @@ const createBid = async (req, res) => {
     
     await client.query('COMMIT');
     
+    emitNewBid(auction_id,{
+      id:bidResult.rows[0].id,
+      amount:bidResult.rows[0].amount,
+      status:bidResult.rows[0].status,
+      placed_at:bidResult.rows[0].placed_at,
+      auction_id:bidResult.rows[0].auction_id,
+      bidder_id:bidResult.rows[0].bidder_id,
+      ip_address:bidResult.rows[0].ip_address,
+    })
     res.status(201).json({
       message: 'Bid placed successfully',
       bid: bidResult.rows[0]

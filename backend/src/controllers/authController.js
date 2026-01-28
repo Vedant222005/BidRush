@@ -22,7 +22,7 @@ const register = async (req, res) => {
     `;
 
     const result = await client.query(input_query, [username, email, hashedPassword, full_name]);
-    
+
     await client.query('COMMIT');
 
     res.status(201).json({
@@ -66,7 +66,7 @@ const login = async (req, res) => {
 
     const user = result.rows[0];
     const isMatch = await bcrypt.compare(password, user.password_hash);
-    
+
     if (!isMatch) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -103,15 +103,15 @@ const login = async (req, res) => {
 };
 
 const logout = async (req, res) => {
-    // We clear the cookie using the exact same configuration used to set it
-    res.clearCookie('token', {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production', 
-        sameSite: 'strict',
-        path: '/' // Ensure the path matches where the cookie was set
-    });
+  // We clear the cookie using the exact same configuration used to set it
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/' // Ensure the path matches where the cookie was set
+  });
 
-    res.status(200).json({ message: 'Logged out successfully' });
+  res.status(200).json({ message: 'Logged out successfully' });
 };
 
-module.exports = { register, login,logout };
+module.exports = { register, login, logout };

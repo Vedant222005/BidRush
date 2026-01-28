@@ -6,30 +6,49 @@ const createAuction = async (req, res) => {
     const { title, description, category, starting_bid, end_time, images } = req.body;
     const seller_id = req.user.id;
 
-    // 1. Get a dedicated client for the transaction
     const client = await con.connect();
 
     try {
         await client.query('BEGIN');
 
-        // 2. Business Validation
+        // --- 1. BUSINESS VALIDATION ---
+
+        // A. Image Requirement
         if (!images || images.length === 0) {
-            throw new Error('At least one image is required');
+            throw new Error('At least one image is required to list an item.');
         }
 
-        // 3. Insert Auction
+        // B. Starting Bid Validation (Token System)
+        if (parseFloat(starting_bid) <= 0) {
+            throw new Error('Starting bid must be a positive number of tokens.');
+        }
+
+        // C. Time Validation: End Time must be in the future
+        const now = Date.now(); // Returns a number (milliseconds), no object created
+        const end = new Date(end_time).getTime(); // Converts to number
+
+        // Now it's a simple number > number check, just like your bid check!
+        if (!end || end <= now) {
+            throw new Error('Auction end time must be in the future.');
+        }
+        // D. Optional: Minimum Duration (e.g., at least 1 hour long)
+        const minDuration = 60 * 60 * 1000; // 1 hour in milliseconds
+        if (end - now < minDuration) {
+            throw new Error('Auction must run for at least 1 hour.');
+        }
+
+        // --- 2. INSERT AUCTION ---
         const auctionQuery = `
             INSERT INTO auctions (seller_id, title, description, category, starting_bid, current_bid, end_time, status)
             VALUES ($1, $2, $3, $4, $5, $5, $6, 'pending')
             RETURNING id`;
         
         const auctionRes = await client.query(auctionQuery, [
-            seller_id, title, description, category, starting_bid, end_time
+            seller_id, title, description, category, starting_bid, end
         ]);
         const auctionId = auctionRes.rows[0].id;
 
-        // 4. Insert Images (Dynamic Multi-row Insert)
-        // 'images' is expected to be an array of objects: [{url: '...', public_id: '...'}]
+        // --- 3. INSERT IMAGES ---
         for (let i = 0; i < images.length; i++) {
             const img = images[i];
             const imageQuery = `
@@ -40,21 +59,21 @@ const createAuction = async (req, res) => {
                 auctionId, 
                 img.url, 
                 img.public_id, 
-                i === 0, // First image becomes 'primary' automatically
-                i        // Maintain the order the user uploaded them in
+                i === 0, 
+                i 
             ]);
         }
 
         await client.query('COMMIT');
 
         res.status(201).json({
-            message: 'Auction and images created successfully',
+            message: 'Auction created successfully and is now pending.',
             auction_id: auctionId
         });
 
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error(err);
+        console.error("Auction Creation Error:", err.message);
         res.status(400).json({ message: err.message || 'Failed to create auction' });
     } finally {
         client.release();
