@@ -1,7 +1,7 @@
 const con=require('../config/db');  
 const { emitNewBid } = require('../webSocket/socketServer');
 
-//with pagination
+//with pagination not cancelled bids
 const getBids = async (req, res) => {
     try {
         const { auction_id } = req.params;
@@ -212,9 +212,10 @@ const getWinningBid=async(req,res)=>{
     }
 };
 
-//auction updation (version change)
+//auction updation (version change) Admin only
 const cancelBid = async (req, res) => {
     const { bid_id } = req.params;
+    const user_id = req.user.id;  
     const client = await con.connect();
 
     try {
@@ -298,4 +299,43 @@ const cancelBid = async (req, res) => {
     }
 };
 
-module.exports={getBids, createBid, getBidByUser, getWinningBid, cancelBid }
+// Get all bids for admin all status bids
+const getAllBidsAdmin = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
+
+    const query = `
+      SELECT 
+        b.id, b.amount, b.status, b.placed_at,
+        u.username as bidder_name,
+        a.title as auction_title, a.id as auction_id
+      FROM bids b
+      JOIN users u ON b.bidder_id = u.id
+      JOIN auctions a ON b.auction_id = a.id
+      ORDER BY b.placed_at DESC
+      LIMIT $1 OFFSET $2`;
+
+    const result = await con.query(query, [limit, offset]);
+
+    const countResult = await con.query('SELECT COUNT(*) FROM bids');
+    const totalItems = parseInt(countResult.rows[0].count);
+
+    res.json({
+      message: 'Bids fetched successfully',
+      data: result.rows,
+      pagination: {
+        totalItems,
+        currentPage: page,
+        totalPages: Math.ceil(totalItems / limit),
+        limit
+      }
+    });
+  } catch (err) {
+    console.error('GetAllBidsAdmin error:', err);
+    res.status(500).json({ message: 'Failed to get bids' });
+  }
+};
+
+module.exports={getBids, createBid, getBidByUser, getWinningBid, cancelBid, getAllBidsAdmin }

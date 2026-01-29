@@ -80,189 +80,165 @@ const createAuction = async (req, res) => {
     }
 };
 
-
-//delete auction (write operation)
+// Delete (Cancel) auction - User before bids, Admin anytime
 const deleteAuction = async (req, res) => {
-    const { id } = req.params;
-    const user_id = req.user.id;
-    const client = await con.connect();
+  const { id } = req.params;
+  const userId = req.user.id;
+  const isAdmin = req.user.role === 'admin';
+  const client = await con.connect();
 
-    try {
-        await client.query('BEGIN');
+  try {
+    await client.query('BEGIN');
 
-        // 1. Fetch and Lock the auction
-        const checkQuery = `
-            SELECT seller_id, total_bids, status ,version
-            FROM auctions 
-            WHERE id = $1 
-            FOR UPDATE`;
-        const checkResult = await client.query(checkQuery, [id]);
+    // Fetch & Lock
+    const { rows } = await client.query(
+      `SELECT seller_id, total_bids, status, version FROM auctions WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
 
-        if (checkResult.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ message: "Auction not found" });
-        }
-
-        const auction = checkResult.rows[0];
-
-        // 2. Security: Only owner can delete
-        if (auction.seller_id !== user_id) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ message: "Unauthorized" });
-        }
-
-        // 3. Integrity: Cannot delete if bids exist
-        // If there are bids, the seller must "cancel" it (which might have penalties)
-        if (auction.total_bids > 0) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ 
-                message: "Cannot delete auction with active bids. Please contact support to cancel." 
-            });
-        }
-
-        // 4. Perform Soft Delete (Status Change)
-        const deleteQuery = `
-            UPDATE auctions 
-            SET status = 'cancelled', 
-            updated_at = NOW() ,
-            version=version+1
-            WHERE id = $1 AND status IN ('active', 'pending')
-            RETURNING id`;
-        
-        await client.query(deleteQuery, [id]);
-
-        await client.query('COMMIT');
-        res.status(200).json({ message: 'Auction cancelled successfully' });
-
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error(err);
-        res.status(500).json({ message: 'Internal server error' });
-    } finally {
-        client.release();
+    if (rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Auction not found' });
     }
+
+    const auction = rows[0];
+    const isOwner = auction.seller_id === userId;
+    const hasBids = auction.total_bids > 0;
+
+    // Authorization
+    if (!isOwner && !isAdmin) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
+
+    // User can only delete if NO bids
+    if (hasBids && !isAdmin) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        message: 'Cannot delete auction with bids. Contact admin.' 
+      });
+    }
+
+    // Already cancelled/ended
+    if (auction.status === 'cancelled' || auction.status === 'ended' || auction.status === 'sold') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Auction already closed' });
+    }
+
+    // Cancel the auction
+    const result = await client.query(
+      `UPDATE auctions 
+       SET status = 'cancelled', version = version + 1, updated_at = NOW()
+       WHERE id = $1 AND version = $2
+       RETURNING *`,
+      [id, auction.version]
+    );
+
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: 'Version conflict' });
+    }
+
+    // TODO: If hasBids, add refund logic here for admin deletion
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Auction cancelled', auction: result.rows[0] });
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Delete Error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  } finally {
+    client.release();
+  }
 };
 
-
-//update Auction (write operation)
+// Update auction - User only, before bids, cannot change status
 const updateAuction = async (req, res) => {
-    const { id } = req.params;
-    const { title, description, category, reserve_price, status, version, end_time } = req.body;
-    const user_id = req.user.id;
+  const { id } = req.params;
+  const { title, description, category, reserve_price, end_time, version } = req.body;
+  const userId = req.user.id;
+  const client = await con.connect();
 
-    // 1. Get a dedicated client from the pool
-    const client = await con.connect(); 
+  try {
+    await client.query('BEGIN');
 
-    try {
-        // 2. Start the Transaction
-        await client.query('BEGIN');
+    // Fetch & Lock
+    const { rows } = await client.query(
+      `SELECT seller_id, total_bids, version, status, end_time as current_end, title as current_title
+       FROM auctions WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
 
-        // 3. Fetch & Lock the row
-        const checkQuery = `
-            SELECT seller_id, total_bids, version, status, end_time, title 
-            FROM auctions 
-            WHERE id = $1 
-            FOR UPDATE`;
-        const checkResult = await client.query(checkQuery, [id]);
-
-        if (checkResult.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ message: "Auction not found" });
-        }
-
-        const auction = checkResult.rows[0];
-
-        // 4. Security & Concurrency Checks
-        if (auction.seller_id !== user_id) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ message: "Unauthorized" });
-        }
-        
-        if (auction.version !== parseInt(version)) {
-            await client.query('ROLLBACK');
-            return res.status(409).json({ message: "Conflict: Data is stale. Refresh required." });
-        }
-
-        // 5. Business Logic (Timing & Integrity)
-        if (end_time) {
-            const newEndTime = new Date(end_time);
-            if (newEndTime <= new Date()) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ message: "End time must be in the future" });
-            }
-            if (auction.total_bids > 0 && newEndTime < new Date(auction.end_time)) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ message: "Cannot shorten duration after bids exist" });
-            }
-        }
-
-        if (title && auction.total_bids > 0 && title !== auction.title) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: "Cannot change title after bidding starts" });
-        }
-
-        if (auction.status === 'ended' || auction.status === 'sold' ) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: "Cannot update a closed auction" });
-        }
-        if (auction.status === 'cancelled' ) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: "Cannot update a cancelled auction" });
-        }
-
-
-        // 6. The Atomic Update (Note: $7 and $8 used for WHERE)
-        const updateQuery = `
-            UPDATE auctions 
-            SET 
-                title = COALESCE($1, title), 
-                description = COALESCE($2, description), 
-                category = COALESCE($3, category),
-                reserve_price = COALESCE($4, reserve_price),
-                status = COALESCE($5, status),
-                end_time = COALESCE($6, end_time),
-                version = version + 1,
-                updated_at = NOW()
-            WHERE id = $7 AND version = $8 
-            RETURNING *`;
-
-        const values = [
-            title || null, 
-            description || null, 
-            category || null, 
-            reserve_price || null, 
-            status || null, 
-            end_time || null,
-            id, 
-            version
-        ];
-
-        const result = await client.query(updateQuery, values);
-
-        if (result.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(409).json({ message: "Update failed (Version Conflict)" });
-        }
-
-        // 7. Commit everything
-        await client.query('COMMIT');
-
-        res.status(200).json({
-            message: 'Auction updated successfully',
-            auction: result.rows[0]
-        });
-
-    } catch (err) {
-        // 8. Rollback on any crash
-        await client.query('ROLLBACK');
-        console.error("Update Error:", err);
-        res.status(500).json({ message: "Internal server error" });
-    } finally {
-        // 9. IMPORTANT: Release the client back to the pool
-        client.release();
+    if (rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Auction not found' });
     }
-};
 
+    const auction = rows[0];
+
+    // Only owner can update
+    if (auction.seller_id !== userId) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
+
+    // Cannot update after bids
+    if (auction.total_bids > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Cannot update after bidding starts' });
+    }
+
+    // Version check
+    if (auction.version !== Number(version)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: 'Data outdated. Please refresh.' });
+    }
+
+    // Cannot update closed auctions
+    if (['cancelled', 'ended', 'sold'].includes(auction.status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Cannot update closed auction' });
+    }
+
+    // End time validation
+    if (end_time && new Date(end_time) <= new Date()) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'End time must be in the future' });
+    }
+
+    // Update (NO status change allowed)
+    const result = await client.query(
+      `UPDATE auctions
+       SET 
+         title = COALESCE($1, title),
+         description = COALESCE($2, description),
+         category = COALESCE($3, category),
+         reserve_price = COALESCE($4, reserve_price),
+         end_time = COALESCE($5, end_time),
+         version = version + 1,
+         updated_at = NOW()
+       WHERE id = $6 AND version = $7
+       RETURNING *`,
+      [title || null, description || null, category || null, reserve_price || null, end_time || null, id, version]
+    );
+
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: 'Update failed (version conflict)' });
+    }
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Auction updated', auction: result.rows[0] });
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Update Error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+};
 
 //getting all auctions pagination added
 const getAllAuctions = async (req, res) => {
@@ -306,7 +282,6 @@ const getAllAuctions = async (req, res) => {
     }
 }
 
-
 //getting auction owned by user with pagination
 const getUserAuctions = async (req, res) => {
     try {
@@ -348,75 +323,137 @@ const getUserAuctions = async (req, res) => {
     }
 }
 
+// Get single auction by ID
+const getAuctionById = async (req, res) => {
+  try {
+    const { id } = req.params;
 
-//activate auction (write operation)
+    const query = `
+      SELECT 
+        a.*,
+        u.username as seller_name,
+        json_agg(json_build_object(
+          'url', ai.image_url,
+          'is_primary', ai.is_primary
+        )) as images
+      FROM auctions a
+      JOIN users u ON a.seller_id = u.id
+      LEFT JOIN auction_images ai ON a.id = ai.auction_id
+      WHERE a.id = $1
+      GROUP BY a.id, u.username`;
+
+    const result = await con.query(query, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Auction not found' });
+    }
+
+    res.json({
+      message: 'Auction fetched successfully',
+      data: result.rows[0]
+    });
+  } catch (err) {
+    console.error('GetAuctionById error:', err);
+    res.status(500).json({ message: 'Failed to get auction' });
+  }
+};
+
+// Get all auctions for admin (any status)
+const getAllAuctionsAdmin = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
+
+    const query = `
+      SELECT 
+        a.id, a.title, a.status, a.current_bid, a.total_bids, 
+        a.end_time, a.created_at,
+        u.username as seller_name,
+        i.image_url as primary_image
+      FROM auctions a
+      JOIN users u ON a.seller_id = u.id
+      LEFT JOIN auction_images i ON a.id = i.auction_id AND i.is_primary = true
+      ORDER BY a.created_at DESC
+      LIMIT $1 OFFSET $2`;
+
+    const result = await con.query(query, [limit, offset]);
+
+    const countResult = await con.query('SELECT COUNT(*) FROM auctions');
+    const totalItems = parseInt(countResult.rows[0].count);
+
+    res.json({
+      message: 'Auctions fetched successfully',
+      data: result.rows,
+      pagination: {
+        totalItems,
+        currentPage: page,
+        totalPages: Math.ceil(totalItems / limit),
+        limit
+      }
+    });
+  } catch (err) {
+    console.error('GetAllAuctionsAdmin error:', err);
+    res.status(500).json({ message: 'Failed to get auctions' });
+  }
+};
+
+// Activate auction - Admin Only
 const activateAuction = async (req, res) => {
   const { id } = req.params;
-  const user_id = req.user.id;
-  
-  // 1. Get dedicated client
   const client = await con.connect();
 
   try {
     await client.query('BEGIN');
 
-    // 2. Fetch & Lock
-    const checkQuery = "SELECT seller_id, status, end_time, version FROM auctions WHERE id = $1 FOR UPDATE";
-    const checkResult = await client.query(checkQuery, [id]);
+    // Fetch & Lock
+    const { rows } = await client.query(
+      `SELECT status, end_time, version FROM auctions WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
 
-    if (checkResult.rows.length === 0) {
+    if (rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Auction not found' });
     }
 
-    const auction = checkResult.rows[0];
+    const auction = rows[0];
 
-    // 3. Business Logic Validations
-    if (auction.seller_id !== user_id) {
-      await client.query('ROLLBACK');
-      return res.status(403).json({ message: 'Unauthorized' });
-    }
+    // Validation
     if (auction.status !== 'pending') {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'Only pending auctions can be activated' });
     }
+
     if (new Date(auction.end_time) <= new Date()) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ message: 'End time has passed. Update end time first.' });
+      return res.status(400).json({ message: 'End time has passed. Cannot activate.' });
     }
 
-    // 4. Atomic State Transition
-    const update_query = `
-      UPDATE auctions 
-      SET status = 'active', 
-          start_time = NOW(),
-          version = version + 1
-      WHERE id = $1 AND status = 'pending' AND version = $2
-      RETURNING *
-    `;
-    
-    const result = await client.query(update_query, [id, auction.version]);
-    
+    // Activate
+    const result = await client.query(
+      `UPDATE auctions 
+       SET status = 'active', start_time = NOW(), version = version + 1, updated_at = NOW()
+       WHERE id = $1 AND version = $2
+       RETURNING *`,
+      [id, auction.version]
+    );
+
     if (result.rows.length === 0) {
       await client.query('ROLLBACK');
-      return res.status(409).json({ message: 'Conflict: Version mismatch.' });
+      return res.status(409).json({ message: 'Version conflict' });
     }
 
     await client.query('COMMIT');
-
-    res.status(200).json({
-      message: 'Auction is now live!',
-      auction: result.rows[0]
-    });
+    res.status(200).json({ message: 'Auction activated!', auction: result.rows[0] });
 
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err);
+    console.error('Activate Error:', err);
     res.status(500).json({ message: 'Internal server error' });
   } finally {
-    // 5. Always release back to pool
     client.release();
   }
 };
 
-module.exports={createAuction,deleteAuction,updateAuction,getAllAuctions,getUserAuctions,activateAuction};
+module.exports={createAuction,deleteAuction,updateAuction,getAllAuctions,getUserAuctions,getAuctionById,getAllAuctionsAdmin,activateAuction};

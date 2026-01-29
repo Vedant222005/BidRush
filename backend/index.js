@@ -8,6 +8,7 @@ const cookieParser = require('cookie-parser');
 const { createServer } = require('http');
 const { initSocket } = require('./src/webSocket/socketServer');
 const uploadRoutes = require('./src/routes/upload');
+const adminRoutes=require('./src/routes/admin');
 
 dotenv.config();
 
@@ -99,6 +100,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/auction', auctionRoutes);
 app.use('/api/bids', bidRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('api/admin/',adminRoutes);
 
 //listen on server
 server.listen(port, () => {

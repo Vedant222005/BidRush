@@ -57,7 +57,7 @@ const login = async (req, res) => {
       return res.status(400).json({ message: 'All required fields must be provided' }); // Fixed: Added return
     }
 
-    const fetch_query = "SELECT id, username, email, password_hash, balance, full_name, version FROM users WHERE username=$1 OR email=$2";
+    const fetch_query = "SELECT id, username, email, password_hash, balance, full_name, role, version FROM users WHERE username=$1 OR email=$2";
     const result = await con.query(fetch_query, [username, email]);
 
     if (result.rows.length === 0) {
@@ -72,7 +72,7 @@ const login = async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.id, email: user.email, username: user.username },
+      { id: user.id, email: user.email, username: user.username, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
@@ -83,7 +83,8 @@ const login = async (req, res) => {
       username: user.username,
       email: user.email,
       full_name: user.full_name,
-      balance: user.balance
+      balance: user.balance,
+      role: user.role 
     };
 
     res.cookie('token', token, {
@@ -114,4 +115,58 @@ const logout = async (req, res) => {
   res.status(200).json({ message: 'Logged out successfully' });
 };
 
-module.exports = { register, login, logout };
+// Get current user from JWT cookie
+const getMe = async (req, res) => {
+  try {
+    // authMiddleware already verified the token and set req.userId
+    const result = await con.query(
+      'SELECT id, email, username, full_name, balance,role FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    res.json({ user: result.rows[0] });
+  } catch (error) {
+    console.error('GetMe error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Get all users (Admin only)
+const getAllUsers = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
+
+    const result = await con.query(
+      `SELECT id, username, email, full_name, balance, role, created_at 
+       FROM users 
+       ORDER BY created_at DESC 
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+
+    const countResult = await con.query('SELECT COUNT(*) FROM users');
+    const totalItems = parseInt(countResult.rows[0].count);
+
+    res.json({
+      message: 'Users fetched successfully',
+      data: result.rows,
+      pagination: {
+        totalItems,
+        currentPage: page,
+        totalPages: Math.ceil(totalItems / limit),
+        limit
+      }
+    });
+  } catch (err) {
+    console.error('GetAllUsers error:', err);
+    res.status(500).json({ message: 'Failed to get users' });
+  }
+};
+
+module.exports = { login, register, logout, getMe,getAllUsers };

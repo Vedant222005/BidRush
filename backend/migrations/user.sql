@@ -1,5 +1,6 @@
 -- Creating an ENUM for status to handle users more professionally
 CREATE TYPE user_status AS ENUM ('active', 'suspended', 'banned');
+CREATE TYPE user_role as ENUM ('user','admin');
 
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,
@@ -14,6 +15,7 @@ CREATE TABLE users (
     -- Money locked in active bids that cannot be spent elsewhere
     reserved_balance DECIMAL(12,2) DEFAULT 0, 
     version INT DEFAULT 1,  
+    role user_role DEFAULT 'user',
     -- Status & Security
     status user_status DEFAULT 'active',
     is_verified BOOLEAN DEFAULT FALSE,

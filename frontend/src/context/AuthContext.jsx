@@ -22,24 +22,18 @@ export const AuthProvider = ({ children }) => {
     const [loading, setLoading] = useState(true);
 
     // Check for existing session on mount
-    // NOTE: Requires /auth/me endpoint in backend to verify session
-    // For now, we skip auto-check since backend doesn't have this route
     useEffect(() => {
-        // No session check - user must login manually
-        // If you add /auth/me to backend, uncomment below:
-        // const checkAuth = async () => {
-        //     try {
-        //         const data = await authAPI.getMe();
-        //         setUser(data.user);
-        //     } catch (err) {
-        //         console.log('No active session');
-        //     } finally {
-        //         setLoading(false);
-        //     }
-        // };
-        // checkAuth();
-
-        setLoading(false);  // Just set loading to false immediately
+        const checkAuth = async () => {
+            try {
+                const data = await authAPI.getMe();
+                setUser(data.user);
+            } catch (err) {
+                console.log('No active session');
+            } finally {
+                setLoading(false);
+            }
+        };
+        checkAuth();
     }, []);
 
     // Login function
