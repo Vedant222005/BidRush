@@ -1,23 +1,27 @@
-const Router =require('express');
-const {createAuction,getAllAuctions,getUserAuctions,updateAuction,deleteAuction,getAuctionById,getAllAuctionsAdmin,activateAuction}=require('../controllers/auctionController');
-const adminMiddleware=require('../middlewares/adminMiddleware');
+const Router = require('express');
+const { createAuction, getAllAuctions, getUserAuctions, updateAuction, deleteAuction, getAuctionById, getAllAuctionsAdmin, activateAuction } = require('../controllers/auctionController');
+const adminMiddleware = require('../middlewares/adminMiddleware');
 const authMiddleware = require('../middlewares/authHandler');
+const validate = require('../middlewares/validate');
+const { createAuctionSchema, updateAuctionSchema, activateAuctionSchema, deleteAuctionSchema } = require('../validators/auctionSchemas');
 
-const router=Router();
-router.get('/user/:userId',authMiddleware,getUserAuctions);
+const router = Router();
+
+router.get('/user/:userId', authMiddleware, getUserAuctions);
 
 // Public
 router.get('/all', getAllAuctions);
 router.get('/:id', getAuctionById);
 
 // User routes
-router.post('/create', authMiddleware, createAuction);
-router.patch('/update/:id', authMiddleware, updateAuction);      // User only, before bids
-router.delete('/delete/:id', authMiddleware, deleteAuction);     // User before bids
+router.post('/create', authMiddleware, validate(createAuctionSchema), createAuction);
+router.patch('/update/:id', authMiddleware, validate(updateAuctionSchema), updateAuction);
+router.delete('/delete/:id', authMiddleware, validate(deleteAuctionSchema), deleteAuction);
 
 // Admin routes
 router.get('/admin/all', authMiddleware, adminMiddleware, getAllAuctionsAdmin);
-router.patch('/admin/activate/:id', authMiddleware, adminMiddleware, activateAuction);  // Admin only
-router.delete('/admin/delete/:id', authMiddleware, adminMiddleware, deleteAuction);     // Admin can delete with bids
+router.patch('/admin/activate/:id', authMiddleware, adminMiddleware, validate(activateAuctionSchema), activateAuction);
+router.delete('/admin/delete/:id', authMiddleware, adminMiddleware, validate(deleteAuctionSchema), deleteAuction);
 
-module.exports=router;
+module.exports = router;
+

@@ -25,6 +25,17 @@ const initSocket = (server) => {
       console.log(`User ${socket.id} left auction:${auctionId}`);
     });
 
+    // Join user's personal room (for balance updates)
+    socket.on('join_user', (userId) => {
+      socket.join(`user:${userId}`);
+      console.log(`User ${socket.id} joined user room:${userId}`);
+    });
+
+    // Leave user room
+    socket.on('leave_user', (userId) => {
+      socket.leave(`user:${userId}`);
+    });
+
     socket.on('disconnect', () => {
       console.log('❌ User disconnected:', socket.id);
     });
@@ -49,4 +60,15 @@ const emitAuctionUpdate = (auctionId, data) => {
   }
 };
 
-module.exports = { initSocket, emitNewBid, emitAuctionUpdate };
+const emitBalanceUpdate = (userId, newBalance) => {
+  if (io) {
+    io.to(`user:${userId}`).emit('balance_update', { balance: newBalance });
+  }
+};
+const emitAuctionReset = (auctionId, data) => {
+  if (io) {
+    io.to(`auction:${auctionId}`).emit('auction_reset', data);
+    console.log(`🔄 Emitted auction_reset to auction:${auctionId}`);
+  }
+};
+module.exports = { initSocket, emitNewBid, emitAuctionUpdate, emitBalanceUpdate, emitAuctionReset };

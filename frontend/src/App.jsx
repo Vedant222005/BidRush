@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
-import { ProtectedRoute } from './components';
+import { ProtectedRoute, AdminRoute } from './components';
 import {
   Home,
   Login,
@@ -13,6 +13,13 @@ import {
   NotFound,
   Unauthorized
 } from './pages';
+import {
+  AdminLayout,
+  AdminDashboard,
+  AdminUsers,
+  AdminAuctions,
+  AdminBids
+} from './pages/admin';
 
 /**
  * App Component
@@ -48,6 +55,16 @@ function App() {
               <Wallet />
             </ProtectedRoute>
           } />
+
+          {/* Admin Routes */}
+          <Route element={<AdminRoute />}>
+            <Route path="/admin" element={<AdminLayout />}>
+              <Route index element={<AdminDashboard />} />
+              <Route path="users" element={<AdminUsers />} />
+              <Route path="auctions" element={<AdminAuctions />} />
+              <Route path="bids" element={<AdminBids />} />
+            </Route>
+          </Route>
 
           {/* 404 Catch-all */}
           <Route path="*" element={<NotFound />} />

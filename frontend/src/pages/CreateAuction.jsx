@@ -9,12 +9,12 @@ import { uploadImages } from '../services/cloudinary'; // Import your new servic
  */
 const CreateAuction = () => {
     const navigate = useNavigate();
-    
+
     // UI States
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [error, setError] = useState('');
-    
+
     // Form States
     const [selectedFiles, setSelectedFiles] = useState([]);
     const [formData, setFormData] = useState({
@@ -34,20 +34,20 @@ const CreateAuction = () => {
 
     const handleFileSelect = (e) => {
         const files = Array.from(e.target.files);
-        
+
         // Basic Validation
         if (files.length > 5) {
             setError('Maximum 5 images allowed');
             return;
         }
-        
+
         const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
         const invalidFile = files.find(f => !validTypes.includes(f.type));
         if (invalidFile) {
             setError('Only JPEG, PNG, and WEBP images are allowed');
             return;
         }
-        
+
         setError(''); // Clear errors if valid
         setSelectedFiles(files);
     };
@@ -101,7 +101,7 @@ const CreateAuction = () => {
                 <p className="text-gray-500 mb-8">List your item for bidding using tokens</p>
 
                 <form onSubmit={handleSubmit} className="bg-white rounded-xl p-6 shadow-md space-y-6">
-                    
+
                     {/* Title */}
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">Title *</label>
@@ -210,11 +210,10 @@ const CreateAuction = () => {
                     <button
                         type="submit"
                         disabled={loading}
-                        className={`w-full py-4 rounded-xl font-bold text-white transition-all ${
-                            loading 
-                            ? 'bg-gray-400 cursor-not-allowed' 
-                            : 'bg-orange-500 hover:bg-orange-600 shadow-lg active:transform active:scale-95'
-                        }`}
+                        className={`w-full py-4 rounded-xl font-bold text-white transition-all ${loading
+                                ? 'bg-gray-400 cursor-not-allowed'
+                                : 'bg-orange-500 hover:bg-orange-600 shadow-lg active:transform active:scale-95'
+                            }`}
                     >
                         {uploading ? 'Uploading Images...' : loading ? 'Finalizing Auction...' : 'Launch Auction'}
                     </button>

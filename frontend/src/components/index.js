@@ -16,3 +16,7 @@ export { default as Hero } from './Hero';
 export { default as Loader } from './Loader';
 export { default as Toast } from './Toast';
 export { default as BidRushIcon } from './BidRushIcon';
+export { default as AdminRoute } from './AdminRoute';
+export { default as AdminSidebar } from './AdminSidebar';
+export { default as StatsCard } from './StatsCard';
+export { default as DataTable } from './DataTable';

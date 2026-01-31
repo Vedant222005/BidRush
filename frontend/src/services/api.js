@@ -62,4 +62,35 @@ export const bidAPI = {
     cancel: (bidId) => api.patch(`/bids/cancel/${bidId}`)
 };
 
+// Admin API (requires admin role)
+export const adminAPI = {
+    // Users
+    getUsers: ({ page = 1, limit = 20 } = {}) =>
+        api.get(`/auth/admin/users?page=${page}&limit=${limit}`),
+    banUser: (userId) =>
+        api.patch(`/auth/admin/users/${userId}/ban`),
+    unbanUser: (userId) =>
+        api.patch(`/auth/admin/users/${userId}/unban`),
+
+    // Auctions
+    getAuctions: ({ page = 1, limit = 20 } = {}) =>
+        api.get(`/auction/admin/all?page=${page}&limit=${limit}`),
+    activateAuction: (id) =>
+        api.patch(`/auction/admin/activate/${id}`),
+    deleteAuction: (id) =>
+        api.delete(`/auction/admin/delete/${id}`),
+
+    // Bids
+    getBids: ({ page = 1, limit = 20, auction_id = null } = {}) => {
+        let url = `/bids/admin/all?page=${page}&limit=${limit}`;
+        if (auction_id) {
+            url += `&auction_id=${auction_id}`;
+        }
+        return api.get(url);
+    },
+    cancelBid: (bidId) =>
+        api.patch(`/bids/cancel/${bidId}`)
+};
+
 export default api;
+

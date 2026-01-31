@@ -63,6 +63,13 @@ const BidForm = ({ auctionId, currentBid, minIncrement = 1, onBidPlaced }) => {
         try {
             const data = await bidAPI.placeBid(auctionId, amount);
             setBidAmount('');
+
+            // Update balance immediately from response (WebSocket will also update)
+            if (data.newBalance !== undefined) {
+                // The AuthContext will be updated via WebSocket, but this is a backup
+                console.log('New balance from API:', data.newBalance);
+            }
+
             if (onBidPlaced) onBidPlaced(data.bid);
         } catch (err) {
             setError(err.message);

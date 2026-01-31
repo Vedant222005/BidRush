@@ -1,341 +1,293 @@
-const con=require('../config/db');  
-const { emitNewBid } = require('../webSocket/socketServer');
+const con = require('../config/db');
+const { emitNewBid, emitBalanceUpdate } = require('../webSocket/socketServer');
+const BidRepo = require('../repositories/bidRepository');
+const AuctionRepo = require('../repositories/auctionRepository');
+const UserRepo = require('../repositories/userRepository');
 
-//with pagination not cancelled bids
+// Get bids for an auction with pagination
 const getBids = async (req, res) => {
-    try {
-        const { auction_id } = req.params;
-        
-        // 1. Get pagination parameters from query string (e.g., ?page=1&limit=10)
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 20;
-        const offset = (page - 1) * limit;
+  try {
+    const { auction_id } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
 
-        // 2. Query for the actual data
-        // We order by amount DESC to show the highest/latest bids first
-        const fetch_query = `
-            SELECT id, amount, status, placed_at 
-            FROM bids 
-            WHERE auction_id = $1 
-            AND status != 'cancelled'
-            ORDER BY amount DESC 
-            LIMIT $2 OFFSET $3`;
+    // Use repository
+    const bids = await BidRepo.getBidsByAuction(con, auction_id, limit, offset);
+    const totalBids = await BidRepo.getBidCount(con, auction_id);
 
-        const result = await con.query(fetch_query, [auction_id, limit, offset]);
+    res.status(200).json({
+      message: 'Bids fetched successfully',
+      data: bids,
+      pagination: {
+        totalBids,
+        currentPage: page,
+        totalPages: Math.ceil(totalBids / limit),
+        limit
+      }
+    });
 
-        // 3. Query for the total count (Useful for the frontend to calculate total pages)
-        const countQuery = `
-            SELECT COUNT(*) 
-            FROM bids 
-            WHERE auction_id = $1 AND status != 'cancelled'`;
-        
-        const countResult = await con.query(countQuery, [auction_id]);
-        const totalBids = parseInt(countResult.rows[0].count);
-
-        
-        res.status(200).json({
-            message: 'Bids fetched successfully',
-            data: result.rows,
-            pagination: {
-                totalBids,
-                currentPage: page,
-                totalPages: Math.ceil(totalBids / limit),
-                limit
-            }
-        });
-
-    } catch (err) {
-        console.error("GetBids Pagination Error:", err);
-        res.status(500).json({ message: 'Failed to get bids' });
-    }
+  } catch (err) {
+    console.error("GetBids Pagination Error:", err);
+    res.status(500).json({ message: 'Failed to get bids' });
+  }
 };
 
-//auction updation (version change)
+// Get winning bid for an auction
+const getWinningBid = async (req, res) => {
+  try {
+    const { auction_id } = req.params;
+
+    // Use repository
+    const winningBid = await BidRepo.getWinningBid(con, auction_id);
+
+    if (!winningBid) {
+      return res.status(404).json({ message: 'No winning bid found' });
+    }
+
+    res.json({
+      message: 'Winning bid fetched successfully',
+      data: winningBid
+    });
+  } catch (err) {
+    console.error("GetWinningBid Error:", err);
+    res.status(500).json({ message: 'Failed to get winning bid' });
+  }
+};
+
+// Create new bid
 const createBid = async (req, res) => {
-  const client = await con.connect();  // Get dedicated connection
+  const client = await con.connect();
   try {
     const { auction_id } = req.params;
     const { bid_amount } = req.body;
-    const user_id = req.user.id;  // From JWT middleware
-    
+    const user_id = req.user.id;
+
+    // 1. START TRANSACTION
     await client.query('BEGIN');
-    
-    // Add a check to see if the user is ALREADY the current winning bidder.
-    // Usually, you shouldn't be allowed to outbid yourself unless it's a proxy bid.
-    const lastBidderResult = await client.query(
-          "SELECT bidder_id FROM bids WHERE auction_id = $1 AND status = 'winning'", [auction_id]
-      );
-      
-    if (lastBidderResult.rows[0]?.bidder_id === user_id) {
-          throw new Error('You are already the highest bidder');
-      }
 
-    // Step 1: Lock auction row - prevents race conditions!
-    const auctionResult = await client.query(
-      `SELECT id, current_bid, end_time, status, seller_id ,version
-       FROM auctions 
-       WHERE id = $1 
-       FOR UPDATE`,  // Row-level lock
-      [auction_id]
-    );
-    
-    if (auctionResult.rows.length === 0) {
-      throw new Error('Auction not found');
-    }
-    
-    const auction = auctionResult.rows[0];
-    
-    // Step 2: Validations
-    if (auction.status !== 'active') {
-      throw new Error('Auction is not active');
-    }
-    
-    if (new Date() > new Date(auction.end_time)) {
-      throw new Error('Auction has ended');
-    }
-    
-    if (auction.seller_id === user_id) {
-      throw new Error('Cannot bid on your own auction');
-    }
-    
-    const minRequiredBid = parseFloat(auction.current_bid) + parseFloat(auction.bid_increment || 1.00);
+    // 2. LOCK THE USER - Use repository
+    const user = await UserRepo.lockAndGetUser(client, user_id);
 
+    if (parseFloat(user.balance) < bid_amount) {
+      throw new Error('Insufficient tokens in your wallet.');
+    }
+
+    // 3. LOCK THE AUCTION - Use repository
+    const auction = await AuctionRepo.lockAndGetAuction(client, auction_id);
+
+    if (!auction) throw new Error('Auction not found');
+
+    // 4. BUSINESS VALIDATIONS
+    if (auction.status !== 'active') throw new Error('Auction is not accepting bids.');
+    if (new Date() > new Date(auction.end_time)) throw new Error('Auction has already ended.');
+    if (auction.seller_id === user_id) throw new Error('You cannot bid on your own item.');
+
+    // 5. CHECK PREVIOUS WINNING BIDDER - Use repository
+    const lastBidder = await BidRepo.lockAndGetWinningBid(client, auction_id);
+
+    if (lastBidder?.bidder_id === user_id) {
+      throw new Error('You are already the leading bidder.');
+    }
+
+    const minRequiredBid = parseFloat(auction.current_bid) + parseFloat(auction.bid_increment || 1.0);
     if (bid_amount < minRequiredBid) {
-      throw new Error(`Minimum bid required is ${minRequiredBid}`);
+      throw new Error(`The minimum allowed bid is ${minRequiredBid} tokens.`);
     }
-    
-    // Step 3: Update previous winning bid status
-    await client.query(
-      `UPDATE bids SET status = 'outbid' 
-       WHERE auction_id = $1 AND status = 'winning'`,
-      [auction_id]
-    );
-    
-    // Step 4: Insert new bid
-    const bidResult = await client.query(
-      `INSERT INTO bids (auction_id, bidder_id, amount, status, ip_address) 
-       VALUES ($1, $2, $3, 'winning', $4)
-       RETURNING *`,
-      [auction_id, user_id, bid_amount, req.ip]
-    );
-    
-    // Step 5: Update auction
-    await client.query(
-      `UPDATE auctions 
-       SET current_bid = $1, total_bids = total_bids + 1, version=version+1,last_bid_at = NOW()
-       WHERE id = $2`,
-      [bid_amount, auction_id]
-    );
-    
-    await client.query('COMMIT');
-    
-    emitNewBid(auction_id,{
-      id:bidResult.rows[0].id,
-      amount:bidResult.rows[0].amount,
-      status:bidResult.rows[0].status,
-      placed_at:bidResult.rows[0].placed_at,
-      auction_id:bidResult.rows[0].auction_id,
-      bidder_id:bidResult.rows[0].bidder_id,
-      ip_address:bidResult.rows[0].ip_address,
-    })
-    res.status(201).json({
-      message: 'Bid placed successfully',
-      bid: bidResult.rows[0]
+
+    // --- START ATOMIC DATA UPDATES ---
+
+    // A. Refund the Previous Bidder (If they exist) - Use repository
+    if (lastBidder) {
+      await UserRepo.updateBalance(client, lastBidder.bidder_id, parseFloat(lastBidder.amount), null);
+      await BidRepo.markBidAsOutbid(client, auction_id);
+    }
+
+    // B. Deduct Tokens from New Bidder - Use repository
+    const updatedUser = await UserRepo.updateBalance(client, user_id, -bid_amount, user.version);
+
+    if (!updatedUser) {
+      throw new Error('Transaction conflict: Your balance was updated elsewhere. Please try again.');
+    }
+
+    // C. Insert the New Winning Bid - Use repository
+    const newBid = await BidRepo.createBid(client, {
+      auction_id,
+      bidder_id: user_id,
+      amount: bid_amount,
+      ip_address: req.ip
     });
-    
+
+    // D. Update Auction State - Use repository
+    await AuctionRepo.updateAuctionBid(client, auction_id, bid_amount);
+
+    // 6. FINALIZE
+    await client.query('COMMIT');
+
+    // Trigger Real-time updates (After successful commit)
+    emitNewBid(auction_id, {
+      ...newBid,
+      new_balance: updatedUser.balance
+    });
+
+    // Notify current bidder of their new balance
+    emitBalanceUpdate(user_id, updatedUser.balance);
+
+    // Notify previous bidder of their refund (if they exist)
+    if (lastBidder) {
+      const prevUser = await UserRepo.getUserById(con, lastBidder.bidder_id);
+      if (prevUser) {
+        emitBalanceUpdate(lastBidder.bidder_id, prevUser.balance);
+      }
+    }
+
+    res.status(201).json({
+      message: 'Bid placed successfully!',
+      bid: newBid,
+      newBalance: updatedUser.balance
+    });
+
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err);
-    res.status(400).json({ message: err.message });
+    console.error("Bidding Error:", err.message);
+    res.status(400).json({ message: err.message || 'Failed to place bid.' });
   } finally {
-    client.release();  // Return connection to pool
+    client.release();
   }
 };
 
-//with pagination
-const getBidByUser = async (req, res) => {
+// Get user's bids
+const getUserBids = async (req, res) => {
   try {
     const user_id = req.user.id;
-    
-    // 1. Get pagination params from query string
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
 
-    // 2. Query for the actual data with a JOIN to get auction titles
-    const fetch_query = `
-      SELECT b.id, b.amount, b.status, b.placed_at, a.title as auction_title, a.id as auction_id
-      FROM bids b 
-      JOIN auctions a ON b.auction_id = a.id 
-      WHERE b.bidder_id = $1 
-      ORDER BY b.placed_at DESC
-      LIMIT $2 OFFSET $3
-    `;
-    
-    const result = await con.query(fetch_query, [user_id, limit, offset]);
+    // Use repository
+    const bids = await BidRepo.getUserBids(con, user_id, limit, offset);
+    const totalBids = await BidRepo.getUserBidCount(con, user_id);
 
-    // 3. Query for total count (Essential for frontend pagination math)
-    const countQuery = "SELECT COUNT(*) FROM bids WHERE bidder_id = $1";
-    const countResult = await con.query(countQuery, [user_id]);
-    const totalBids = parseInt(countResult.rows[0].count);
-
-    res.status(200).json({
-      message: "Fetched user's bids successfully",
-      data: result.rows,
+    res.json({
+      message: 'User bids fetched successfully',
+      data: bids,
       pagination: {
-        totalItems: totalBids,
+        totalBids,
         currentPage: page,
         totalPages: Math.ceil(totalBids / limit),
-        limit: limit
+        limit
       }
     });
   } catch (err) {
-    console.error("GetBidByUser Error:", err);
-    res.status(500).json({ message: "Failed to fetch user's bids" });
+    console.error("GetUserBids Error:", err);
+    res.status(500).json({ message: 'Failed to get user bids' });
   }
 };
 
-const getWinningBid=async(req,res)=>{
-    try{
-        const {auction_id}=req.params;
-        const fetch_query = "SELECT * FROM bids WHERE auction_id=$1 AND status != 'cancelled' ORDER BY amount DESC LIMIT 1";
-        const result=await con.query(fetch_query,[auction_id]);
-        
-        res.status(200).json({
-            message:'Bid fetched successfully',
-            result:result
-        });
-
-    }
-    catch(err){
-        res.status(500).json({message:'failed to get winning bid'})
-    }
-};
-
-//auction updation (version change) Admin only
+// Cancel bid - Admin only
 const cancelBid = async (req, res) => {
-    const { bid_id } = req.params;
-    const user_id = req.user.id;  
-    const client = await con.connect();
+  const { bid_id } = req.params;
+  const client = await con.connect();
 
-    try {
-        await client.query('BEGIN');
+  try {
+    // 1. START TRANSACTION
+    await client.query('BEGIN');
 
-        // 1. Fetch Bid and Lock the Auction it belongs to
-        // We join with auctions to get the current status and seller info
-        const findBidQuery = `
-            SELECT b.status,b.bidder_id, b.amount, b.auction_id, a.current_bid, a.status as auction_status
-            FROM bids b
-            JOIN auctions a ON b.auction_id = a.id
-            WHERE b.id = $1
-            FOR UPDATE OF a`; // Lock the auction row specifically
-        
-        const bidResult = await client.query(findBidQuery, [bid_id]);
+    // 2. FETCH BID & LOCK - Use repository
+    const bid = await BidRepo.getBidWithDetails(client, bid_id);
 
-        if (bidResult.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ message: 'Bid not found' });
-        }
-
-        const bid = bidResult.rows[0];
-
-        // 2. Business Logic Checks
-        if (bid.status === 'cancelled') {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: 'Bid already cancelled' });
-        }
-        if (bid.auction_status !== 'active') {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: 'Cannot cancel bids on a closed auction' });
-        }
-
-        if (bid.bidder_id !== user_id) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ message: "You can only cancel your own bids" });
-        }
-
-        // 3. Update Bid Status
-        await client.query("UPDATE bids SET status = 'cancelled' WHERE id = $1", [bid_id]);
-
-        // 4. Critical Step: If this was the WINNING bid, we must find the NEW winner
-        if (bid.status === 'winning') {
-            // Find the next highest active bid
-            const nextBidResult = await client.query(
-                `SELECT id, amount FROM bids 
-                 WHERE auction_id = $1 AND status != 'cancelled' AND id != $2
-                 ORDER BY amount DESC LIMIT 1`,
-                [bid.auction_id, bid_id]
-            );
-
-            if (nextBidResult.rows.length > 0) {
-                const nextBid = nextBidResult.rows[0];
-                
-                // Set the new winner
-                await client.query("UPDATE bids SET status = 'winning' WHERE id = $1", [nextBid.id]);
-                
-                // Update Auction current price to the next highest bid
-                await client.query(
-                    `UPDATE auctions SET current_bid = $1, version = version + 1 WHERE id = $2`,
-                    [nextBid.amount, bid.auction_id]
-                );
-            } else {
-                // If NO other bids exist, reset auction to starting price (or 0)
-                await client.query(
-                    `UPDATE auctions SET current_bid = starting_bid, version = version + 1 WHERE id = $1`,
-                    [bid.auction_id]
-                );
-            }
-        }
-
-        await client.query('COMMIT');
-        res.status(200).json({ message: 'Bid cancelled and auction state recalculated' });
-
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error(err);
-        res.status(500).json({ message: 'Internal server error' });
-    } finally {
-        client.release();
+    if (!bid) {
+      throw new Error('Bid not found');
     }
+
+    // 3. VALIDATION: Only allow cancelling the WINNING bid
+    if (bid.status !== 'winning') {
+      throw new Error('Only the current winning bid can be cancelled to trigger a restart');
+    }
+
+    if (bid.auction_status !== 'active') {
+      throw new Error('Cannot cancel bids on a closed or pending auction');
+    }
+
+    // 4. REFUND THE WINNING BIDDER - Use repository
+    const refundedUser = await UserRepo.updateBalance(
+      client,
+      bid.bidder_id,
+      bid.amount,
+      bid.user_version
+    );
+
+    if (!refundedUser) {
+      throw new Error('Concurrency Error: User balance updated during refund.');
+    }
+
+    // 5. CANCEL THE BID RECORD - Use repository
+    await BidRepo.cancelBid(client, bid_id);
+
+    // 6. RESTART THE AUCTION - Use repository
+    await AuctionRepo.resetAuction(client, bid.auction_id);
+
+    // 7. COMMIT
+    await client.query('COMMIT');
+
+    // Notify user of refund
+    emitBalanceUpdate(bid.bidder_id, refundedUser.balance);
+
+    res.status(200).json({
+      message: 'Winning bid cancelled. Money refunded and auction has been restarted.',
+      newBalance: refundedUser.balance
+    });
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error("Cancellation Error:", err.message);
+    res.status(400).json({ message: err.message || 'Failed to cancel bid' });
+  } finally {
+    client.release();
+  }
 };
 
-// Get all bids for admin all status bids
-const getAllBidsAdmin = async (req, res) => {
+// Get all bids (Admin)
+const getAllBids = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
+    const auction_id = req.query.auction_id ? parseInt(req.query.auction_id) : null;
 
-    const query = `
-      SELECT 
-        b.id, b.amount, b.status, b.placed_at,
-        u.username as bidder_name,
-        a.title as auction_title, a.id as auction_id
-      FROM bids b
-      JOIN users u ON b.bidder_id = u.id
-      JOIN auctions a ON b.auction_id = a.id
-      ORDER BY b.placed_at DESC
-      LIMIT $1 OFFSET $2`;
+    // Use repository with filters
+    const bids = await BidRepo.getAllBids(con, {
+      limit,
+      offset,
+      auction_id
+    });
 
-    const result = await con.query(query, [limit, offset]);
-
-    const countResult = await con.query('SELECT COUNT(*) FROM bids');
-    const totalItems = parseInt(countResult.rows[0].count);
+    const totalItems = await BidRepo.getTotalBidCount(con, auction_id);
 
     res.json({
       message: 'Bids fetched successfully',
-      data: result.rows,
+      data: bids,
       pagination: {
         totalItems,
         currentPage: page,
         totalPages: Math.ceil(totalItems / limit),
         limit
+      },
+      filter: {
+        auction_id: auction_id || 'all'
       }
     });
   } catch (err) {
-    console.error('GetAllBidsAdmin error:', err);
+    console.error('GetAllBids error:', err);
     res.status(500).json({ message: 'Failed to get bids' });
   }
 };
 
-module.exports={getBids, createBid, getBidByUser, getWinningBid, cancelBid, getAllBidsAdmin }
+module.exports = {
+  getBids,
+  getWinningBid,
+  createBid,
+  getUserBids,
+  cancelBid,
+  getAllBids
+};

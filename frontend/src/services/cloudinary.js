@@ -12,7 +12,8 @@ import axios from 'axios';
 export const uploadImage = async (file) => {
   try {
     // Step 1: Get signature from backend
-    const { data: signatureData } = await api.get('/upload/signature');
+    // Note: api interceptor already extracts response.data, so we get the object directly
+    const signatureData = await api.get('/upload/signature');
 
     // Step 2: Prepare form data for Cloudinary
     const formData = new FormData();
@@ -38,7 +39,7 @@ export const uploadImage = async (file) => {
 
     // Forward a readable error
     throw new Error(
-      error?.response?.data?.error?.message || 
+      error?.response?.data?.error?.message ||
       'Image upload failed'
     );
   }

@@ -66,8 +66,8 @@ const Dashboard = () => {
                     <button
                         onClick={() => setActiveTab('auctions')}
                         className={`pb-3 px-1 font-medium transition-colors ${activeTab === 'auctions'
-                                ? 'text-orange-500 border-b-2 border-orange-500'
-                                : 'text-gray-500 hover:text-gray-700'
+                            ? 'text-orange-500 border-b-2 border-orange-500'
+                            : 'text-gray-500 hover:text-gray-700'
                             }`}
                     >
                         My Auctions ({myAuctions.length})
@@ -75,8 +75,8 @@ const Dashboard = () => {
                     <button
                         onClick={() => setActiveTab('bids')}
                         className={`pb-3 px-1 font-medium transition-colors ${activeTab === 'bids'
-                                ? 'text-orange-500 border-b-2 border-orange-500'
-                                : 'text-gray-500 hover:text-gray-700'
+                            ? 'text-orange-500 border-b-2 border-orange-500'
+                            : 'text-gray-500 hover:text-gray-700'
                             }`}
                     >
                         My Bids ({myBids.length})
@@ -133,8 +133,8 @@ const Dashboard = () => {
                                             </td>
                                             <td className="px-6 py-4">
                                                 <span className={`px-2 py-1 text-xs rounded-full ${bid.status === 'winning' ? 'bg-green-100 text-green-700' :
-                                                        bid.status === 'outbid' ? 'bg-red-100 text-red-700' :
-                                                            'bg-gray-100 text-gray-700'
+                                                    bid.status === 'outbid' ? 'bg-red-100 text-red-700' :
+                                                        'bg-gray-100 text-gray-700'
                                                     }`}>
                                                     {bid.status}
                                                 </span>

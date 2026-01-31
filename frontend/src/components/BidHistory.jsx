@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { bidAPI } from '../services/api';
+import { useSocket } from '../hooks/useSocket';
 
 /**
  * BidHistory Component
@@ -7,6 +8,7 @@ import { bidAPI } from '../services/api';
  * HOOKS USED:
  * - useState - Manages bids array, loading, and pagination
  * - useEffect - Fetches bid history when auctionId changes
+ * - useSocket - Real-time WebSocket updates
  * 
  * PROPS:
  * - auctionId: ID of auction to fetch bids for
@@ -15,31 +17,62 @@ import { bidAPI } from '../services/api';
  * - Displays list of all bids for an auction
  * - Highlights winning bid
  * - Supports pagination
+ * - Real-time updates via WebSocket
  */
 const BidHistory = ({ auctionId }) => {
     const [bids, setBids] = useState([]);
     const [loading, setLoading] = useState(true);
     const [pagination, setPagination] = useState({ currentPage: 1, totalPages: 1 });
 
-    useEffect(() => {
-        const fetchBids = async () => {
-            setLoading(true);
-            try {
-                const data = await bidAPI.getByAuction(auctionId, pagination.currentPage);
-                setBids(data.data);
-                setPagination({
-                    currentPage: data.pagination.currentPage,
-                    totalPages: data.pagination.totalPages
-                });
-            } catch (err) {
-                console.error('Failed to fetch bids:', err);
-            } finally {
-                setLoading(false);
-            }
-        };
+    const socket = useSocket();
 
-        fetchBids();
+    // Fetch bids function
+    const fetchBids = async (page = 1) => {
+        setLoading(true);
+        try {
+            const data = await bidAPI.getByAuction(auctionId, page);
+            setBids(data.data);
+            setPagination({
+                currentPage: data.pagination.currentPage,
+                totalPages: data.pagination.totalPages
+            });
+        } catch (err) {
+            console.error('Failed to fetch bids:', err);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // Initial fetch
+    useEffect(() => {
+        fetchBids(pagination.currentPage);
     }, [auctionId, pagination.currentPage]);
+
+    // Real-time WebSocket updates
+    useEffect(() => {
+        if (!socket) return;
+
+        socket.emit('join_auction', auctionId);
+
+        socket.on('new_bid', (newBid) => {
+            // Only update if this bid is for our auction
+            if (newBid.auction_id != auctionId) return;
+
+            // Update bids: add new bid and mark old winning as outbid
+            setBids(prev => {
+                const updated = prev.map(b =>
+                    b.status === 'winning' ? { ...b, status: 'outbid' } : b
+                );
+                // Add new bid at top, avoid duplicates
+                return [newBid, ...updated.filter(b => b.id !== newBid.id)];
+            });
+        });
+
+        return () => {
+            socket.emit('leave_auction', auctionId);
+            socket.off('new_bid');
+        };
+    }, [socket, auctionId]);
 
     const formatTime = (dateString) => {
         const date = new Date(dateString);
@@ -81,8 +114,8 @@ const BidHistory = ({ auctionId }) => {
                     <div
                         key={bid.id}
                         className={`flex justify-between items-center p-3 rounded-lg ${bid.status === 'winning'
-                                ? 'bg-green-50 border border-green-200'
-                                : 'bg-gray-50'
+                            ? 'bg-green-50 border border-green-200'
+                            : 'bg-gray-50'
                             }`}
                     >
                         <div className="flex items-center space-x-3">
@@ -97,8 +130,8 @@ const BidHistory = ({ auctionId }) => {
                             </div>
                         </div>
                         <span className={`text-xs font-medium px-2 py-1 rounded-full ${bid.status === 'winning' ? 'bg-green-100 text-green-700' :
-                                bid.status === 'outbid' ? 'bg-gray-100 text-gray-600' :
-                                    'bg-gray-100 text-gray-600'
+                            bid.status === 'outbid' ? 'bg-gray-100 text-gray-600' :
+                                'bg-gray-100 text-gray-600'
                             }`}>
                             {bid.status}
                         </span>

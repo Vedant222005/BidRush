@@ -1,9 +1,10 @@
 const con = require('../config/db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const UserRepo = require('../repositories/userRepository');
 
 const register = async (req, res) => {
-  const client = await con.connect(); // Use dedicated client for transaction safety
+  const client = await con.connect();
   try {
     const { username, email, password, full_name } = req.body;
 
@@ -15,23 +16,24 @@ const register = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const input_query = `
-      INSERT INTO users (username, email, password_hash, balance, full_name, version)
-      VALUES ($1, $2, $3, 0, $4, 1) -- Initialize version at 1
-      RETURNING id, username, email, full_name, balance
-    `;
-
-    const result = await client.query(input_query, [username, email, hashedPassword, full_name]);
+    // Use repository instead of direct query
+    const user = await UserRepo.createUser(client, {
+      username,
+      email,
+      password_hash: hashedPassword,
+      full_name
+    });
 
     await client.query('COMMIT');
 
     res.status(201).json({
       message: 'User registered successfully',
-      user: result.rows[0]
+      user
     });
 
   } catch (err) {
     await client.query('ROLLBACK');
+
     // PostgreSQL unique constraint violation error code
     if (err.code === '23505') {
       if (err.constraint === 'users_email_key') {
@@ -53,18 +55,27 @@ const login = async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
-    if ((!username && !email) || !password) {
-      return res.status(400).json({ message: 'All required fields must be provided' }); // Fixed: Added return
+    // Accept either username or email (frontend may send as 'email' field)
+    const identifier = username || email;
+
+    if (!identifier || !password) {
+      return res.status(400).json({ message: 'All required fields must be provided' });
     }
 
-    const fetch_query = "SELECT id, username, email, password_hash, balance, full_name, role, version FROM users WHERE username=$1 OR email=$2";
-    const result = await con.query(fetch_query, [username, email]);
+    // Use repository instead of direct query
+    const user = await UserRepo.getUserByUsernameOrEmail(con, identifier);
 
-    if (result.rows.length === 0) {
-      return res.status(401).json({ message: 'Invalid credentials' }); // Security: Don't tell them if it was the email or password that was wrong
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    const user = result.rows[0];
+    // Check if user is banned or suspended
+    if (user.status === 'banned') {
+      return res.status(403).json({
+        message: 'Your account has been banned. Please contact support.'
+      });
+    }
+
     const isMatch = await bcrypt.compare(password, user.password_hash);
 
     if (!isMatch) {
@@ -84,78 +95,71 @@ const login = async (req, res) => {
       email: user.email,
       full_name: user.full_name,
       balance: user.balance,
-      role: user.role 
+      role: user.role
     };
 
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      path: '/',
-      maxAge: 60 * 60 * 1000
+      maxAge: 3600000
     });
 
-    res.status(200).json({ message: 'Login successful', user: responseData });
-
+    res.json({
+      message: 'Login successful',
+      user: responseData
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Login failed' });
+    res.status(500).json({ message: 'Failed to login' });
   }
 };
 
 const logout = async (req, res) => {
-  // We clear the cookie using the exact same configuration used to set it
-  res.clearCookie('token', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    path: '/' // Ensure the path matches where the cookie was set
-  });
-
-  res.status(200).json({ message: 'Logged out successfully' });
+  res.clearCookie('token');
+  res.json({ message: 'Logout successful' });
 };
 
-// Get current user from JWT cookie
 const getMe = async (req, res) => {
   try {
-    // authMiddleware already verified the token and set req.userId
-    const result = await con.query(
-      'SELECT id, email, username, full_name, balance,role FROM users WHERE id = $1',
-      [req.user.id]
-    );
-    
-    if (result.rows.length === 0) {
+    const user_id = req.user.id;
+
+    // Use repository instead of direct query
+    const user = await UserRepo.getUserById(con, user_id);
+
+    if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
-    
-    res.json({ user: result.rows[0] });
-  } catch (error) {
-    console.error('GetMe error:', error);
-    res.status(500).json({ message: 'Server error' });
+
+    res.json({
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        full_name: user.full_name,
+        balance: user.balance,
+        role: user.role
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to fetch user data' });
   }
 };
 
-// Get all users (Admin only)
+// Admin only: Get all users with pagination
 const getAllUsers = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    const result = await con.query(
-      `SELECT id, username, email, full_name, balance, role, created_at 
-       FROM users 
-       ORDER BY created_at DESC 
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
-    );
-
-    const countResult = await con.query('SELECT COUNT(*) FROM users');
-    const totalItems = parseInt(countResult.rows[0].count);
+    // Use repository for both queries
+    const users = await UserRepo.getAllUsers(con, limit, offset);
+    const totalItems = await UserRepo.getUserCount(con);
 
     res.json({
       message: 'Users fetched successfully',
-      data: result.rows,
+      data: users,
       pagination: {
         totalItems,
         currentPage: page,
@@ -164,9 +168,51 @@ const getAllUsers = async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('GetAllUsers error:', err);
-    res.status(500).json({ message: 'Failed to get users' });
+    console.error(err);
+    res.status(500).json({ message: 'Failed to fetch users' });
   }
 };
 
-module.exports = { login, register, logout, getMe,getAllUsers };
+// Admin only: Ban user
+const banUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await UserRepo.updateUserStatus(con, userId, 'banned');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      message: 'User banned successfully',
+      user
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to ban user' });
+  }
+};
+
+// Admin only: Unban user
+const unbanUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await UserRepo.updateUserStatus(con, userId, 'active');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      message: 'User unbanned successfully',
+      user
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to unban user' });
+  }
+};
+
+module.exports = { register, login, logout, getMe, getAllUsers, banUser, unbanUser };

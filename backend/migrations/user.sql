@@ -1,5 +1,5 @@
 -- Creating an ENUM for status to handle users more professionally
-CREATE TYPE user_status AS ENUM ('active', 'suspended', 'banned');
+CREATE TYPE user_status AS ENUM ('active', 'banned');
 CREATE TYPE user_role as ENUM ('user','admin');
 
 CREATE TABLE users (

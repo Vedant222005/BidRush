@@ -1,22 +1,22 @@
 const { Router } = require('express');
-const { getBids, createBid, getBidByUser, getWinningBid, cancelBid, getAllBidsAdmin } = require('../controllers/bidController');
-const adminMiddleware=require('../middlewares/adminMiddleware');
+const { getBids, createBid, getUserBids, getWinningBid, cancelBid, getAllBids } = require('../controllers/bidController');
+const adminMiddleware = require('../middlewares/adminMiddleware');
 const authMiddleware = require('../middlewares/authHandler');
+const validate = require('../middlewares/validate');
+const { createBidSchema, cancelBidSchema, getBidsByAuctionSchema } = require('../validators/bidSchemas');
 
 const router = Router();
 
-//public routes
-router.get('/auction/:auction_id', getBids);
+// Public routes
+router.get('/auction/:auction_id', validate(getBidsByAuctionSchema), getBids);
 router.get('/winning/:auction_id', getWinningBid);
 
-//private routes
-router.post('/create/:auction_id', authMiddleware, createBid);
-// 4. Get all bids by the logged-in user (Protected)
-// Use 'me' instead of passing user_id to prevent users from seeing each other's history
-router.get('/me', authMiddleware, getBidByUser);
+// Private routes
+router.post('/create/:auction_id', authMiddleware, validate(createBidSchema), createBid);
+router.get('/me', authMiddleware, getUserBids);
 
-//admin routes
-router.get('/admin/all', authMiddleware, adminMiddleware, getAllBidsAdmin);
-router.patch('/cancel/:bid_id', authMiddleware, adminMiddleware, cancelBid);
+// Admin routes
+router.get('/admin/all', authMiddleware, adminMiddleware, getAllBids);
+router.patch('/cancel/:bid_id', authMiddleware, adminMiddleware, validate(cancelBidSchema), cancelBid);
 
 module.exports = router;

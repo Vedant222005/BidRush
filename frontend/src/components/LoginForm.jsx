@@ -38,7 +38,11 @@ const LoginForm = () => {
         setLoading(true);
 
         try {
-            await login(formData);
+            await login({
+                username: formData.email,
+                email: formData.email,
+                password: formData.password
+            });
             navigate('/dashboard');
         } catch (err) {
             setError(err.message || 'Login failed. Please try again.');
