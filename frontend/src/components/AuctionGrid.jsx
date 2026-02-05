@@ -18,7 +18,7 @@ import { auctionAPI } from '../services/api';
  * - Displays grid of auction cards
  * - Handles pagination
  */
-const AuctionGrid = ({ userId = null, limit = 12 }) => {
+const AuctionGrid = ({ userId = null, limit = 12, filters = {} }) => {
     const [auctions, setAuctions] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -34,7 +34,7 @@ const AuctionGrid = ({ userId = null, limit = 12 }) => {
             try {
                 const data = userId
                     ? await auctionAPI.getUserAuctions(userId, pagination.currentPage)
-                    : await auctionAPI.getAll(pagination.currentPage, limit);
+                    : await auctionAPI.getAll(pagination.currentPage, limit, filters);
 
                 setAuctions(data.data);
                 setPagination(prev => ({
@@ -50,7 +50,10 @@ const AuctionGrid = ({ userId = null, limit = 12 }) => {
         };
 
         fetchAuctions();
-    }, [userId, pagination.currentPage, limit]);
+        // filters dependency: JSON.stringify to avoid infinite loop on object ref
+    }, [userId, pagination.currentPage, limit, JSON.stringify(filters)]);
+
+
 
     const handlePageChange = (newPage) => {
         setPagination(prev => ({ ...prev, currentPage: newPage }));

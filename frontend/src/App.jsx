@@ -7,11 +7,13 @@ import {
   Register,
   Auctions,
   AuctionDetail,
+  AuctionHistory,
   Dashboard,
   CreateAuction,
   Wallet,
   NotFound,
-  Unauthorized
+  Unauthorized,
+  EditAuction
 } from './pages';
 import {
   AdminLayout,
@@ -36,6 +38,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/auctions" element={<Auctions />} />
+          <Route path="/auctions/history" element={<AuctionHistory />} />
           <Route path="/auction/:id" element={<AuctionDetail />} />
           <Route path="/unauthorized" element={<Unauthorized />} />
 
@@ -53,6 +56,11 @@ function App() {
           <Route path="/wallet" element={
             <ProtectedRoute>
               <Wallet />
+            </ProtectedRoute>
+          } />
+          <Route path="/auction/edit/:id" element={
+            <ProtectedRoute>
+              <EditAuction />
             </ProtectedRoute>
           } />
 

@@ -45,7 +45,7 @@ export const AuthProvider = ({ children }) => {
     useEffect(() => {
         if (!socket || !user?.id) return;
 
-        // Join user's personal room
+        // Join request user's personal room
         socket.emit('join_user', user.id);
 
         // Listen for balance updates
@@ -74,6 +74,7 @@ export const AuthProvider = ({ children }) => {
     };
 
     // Logout function
+
     const logout = async () => {
         try {
             await authAPI.logout();

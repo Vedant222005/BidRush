@@ -9,6 +9,8 @@ import Pagination from './Pagination';
  * @param {Function} onAction - Callback for action buttons
  * @param {Array} actions - [{label, action, variant}]
  */
+
+
 const DataTable = ({ columns, data, pagination, onAction, actions, loading }) => {
     if (loading) {
         return (

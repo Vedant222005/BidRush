@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import StatsCard from '../../components/StatsCard';
 import { adminAPI } from '../../services/api';
-
+import { useSocket } from '../../hooks/useSocket';
 /**
  * AdminDashboard - Main admin dashboard with stats
  */
+
 const AdminDashboard = () => {
     const [stats, setStats] = useState({
         totalUsers: 0,
@@ -40,6 +41,43 @@ const AdminDashboard = () => {
 
         fetchStats();
     }, []);
+
+    const socket = useSocket();
+
+    // Listen for real-time updates to stats
+    useEffect(() => {
+        if (!socket) return;
+
+        const handleNewUser = () => {
+            setStats(prev => ({ ...prev, totalUsers: prev.totalUsers + 1 }));
+        };
+
+        const handleNewAuction = () => {
+            setStats(prev => ({ 
+                ...prev, 
+                totalAuctions: prev.totalAuctions + 1,
+                // Assuming new auctions start as pending (not active)
+            }));
+        };
+
+        const handleNewBid = () => {
+             setStats(prev => ({ ...prev, totalBids: prev.totalBids + 1 }));
+        };
+        
+        socket.emit('join_admin_room');
+        socket.on('new_user', handleNewUser);
+        socket.on('new_auction', handleNewAuction);
+        socket.on('new_bid', handleNewBid);
+
+        return () => {
+            socket.emit('leave_admin_room');
+            socket.off('new_user', handleNewUser);
+            socket.off('new_auction', handleNewAuction);
+            socket.off('new_bid', handleNewBid);
+        };
+    }, [socket]);
+
+
 
     if (loading) {
         return (

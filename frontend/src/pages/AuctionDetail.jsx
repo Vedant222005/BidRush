@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Timer, BidForm, BidHistory, Loader } from '../components';
 import { auctionAPI } from '../services/api';
-
+import { useAuth } from '../context/AuthContext';
+import { useSocket } from '../hooks/useSocket';
 /**
  * Auction Detail Page
  * 
@@ -13,20 +14,22 @@ import { auctionAPI } from '../services/api';
  */
 const AuctionDetail = () => {
     const { id } = useParams();
+    const navigate = useNavigate();
+    const { user } = useAuth();
     const [auction, setAuction] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [selectedImage, setSelectedImage] = useState(null);
 
     useEffect(() => {
         const fetchAuction = async () => {
             try {
-                // TODO: Add getById to backend
-                const data = await auctionAPI.getAll(1, 100);
-                const found = data.data.find(a => a.id === parseInt(id));
-                if (found) {
-                    setAuction(found);
-                } else {
-                    setError('Auction not found');
+                const response = await auctionAPI.getById(id);
+                const data = response.data;
+                setAuction(data);
+                // Set the default big image to the first one in the ordered array
+                if (data.images && data.images.length > 0) {
+                    setSelectedImage(data.images[0]);
                 }
             } catch (err) {
                 setError(err.message);
@@ -34,9 +37,66 @@ const AuctionDetail = () => {
                 setLoading(false);
             }
         };
-
         fetchAuction();
     }, [id]);
+
+    const socket = useSocket();
+    useEffect(() => {
+        if (!socket) return;
+
+        // Listen for bid updates
+        const handleNewBid = (newBid) => {
+            if (newBid.auction_id == id) {
+                setAuction(prev => ({
+                    ...prev,
+                    current_bid: newBid.amount
+                }));
+            }
+        };
+        // Listen for general auction updates (status, title, end_time)
+        const handleAuctionUpdate = (updatedData) => {
+            if (updatedData.id == id) {
+                setAuction(prev => ({
+                    ...prev,
+                    ...updatedData
+                }));
+            }
+        };
+
+        // Listen for reset (when bid cancelled)
+        const handleAuctionReset = (resetData) => {
+            if (resetData.id == id) {
+                setAuction(prev => ({
+                    ...prev,
+                    ...resetData
+                }));
+            }
+        };
+
+        socket.on('new_bid', handleNewBid);
+        socket.on('auction_update', handleAuctionUpdate);
+        socket.on('auction_reset', handleAuctionReset);
+
+        // Cleanup
+        return () => {
+            socket.off('new_bid', handleNewBid);
+            socket.off('auction_update', handleAuctionUpdate);
+            socket.off('auction_reset', handleAuctionReset);
+        };
+    }, [socket, id]);
+    const handleCancel = async () => {
+        if (!window.confirm('Are you sure you want to cancel this auction? This action cannot be undone.')) {
+            return;
+        }
+
+        try {
+            await auctionAPI.cancel(id);
+            alert('Auction cancelled successfully');
+            navigate('/dashboard');
+        } catch (err) {
+            alert(err.message || 'Failed to cancel auction');
+        }
+    };
 
     if (loading) {
         return (
@@ -64,23 +124,47 @@ const AuctionDetail = () => {
         );
     }
 
+    const isOwner = user && auction.seller_id === user.id;
+    const canCancel = isOwner && (auction.status === 'active' || auction.status === 'pending') && auction.total_bids === 0;
+
     return (
         <div className="min-h-screen bg-gray-50">
             <Navbar />
 
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
                 <div className="grid lg:grid-cols-2 gap-8">
-                    {/* Left: Image */}
+                    {/* Left: Image & Gallery */}
                     <div>
                         <div className="bg-white rounded-xl overflow-hidden shadow-md">
+                            {/* Main Featured Image - Now dynamic based on state */}
                             <img
-                                src={auction.primary_image || '/placeholder.jpg'}
+                                src={selectedImage || '/placeholder.jpg'}
                                 alt={auction.title}
-                                className="w-full h-96 object-cover"
+                                className="w-full h-96 object-cover transition-all duration-300"
                             />
                         </div>
 
-                        {/* Description */}
+                        {/* Thumbnail Gallery */}
+                        {auction.images && auction.images.length > 1 && (
+                            <div className="flex gap-2 mt-4 overflow-x-auto pb-2">
+                                {auction.images.map((imgUrl, index) => (
+                                    <div key={index} className="flex-shrink-0">
+                                        <img
+                                            src={imgUrl}
+                                            alt={`View ${index + 1}`}
+                                            // Add a blue border if this thumbnail is the one selected
+                                            className={`w-20 h-20 object-cover rounded-lg border-2 transition-all cursor-pointer ${selectedImage === imgUrl ? 'border-blue-500 scale-105' : 'border-transparent'
+                                                }`}
+                                            // THE FIX: Clicking this updates the state, which re-renders the big image
+                                            onClick={() => setSelectedImage(imgUrl)}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* ... Description ... */}
+
                         <div className="bg-white rounded-xl p-6 shadow-md mt-6">
                             <h3 className="text-lg font-semibold text-gray-900 mb-3">Description</h3>
                             <p className="text-gray-600">
@@ -93,12 +177,30 @@ const AuctionDetail = () => {
                     <div className="space-y-6">
                         {/* Title & Status */}
                         <div className="bg-white rounded-xl p-6 shadow-md">
-                            <span className={`inline-block px-3 py-1 text-sm font-medium rounded-full mb-3
-                ${auction.status === 'active' ? 'bg-green-100 text-green-700' :
-                                    auction.status === 'pending' ? 'bg-yellow-100 text-yellow-700' :
-                                        'bg-gray-100 text-gray-700'}`}>
-                                {auction.status}
-                            </span>
+                            <div className="flex justify-between items-start mb-3">
+                                <span className={`inline-block px-3 py-1 text-sm font-medium rounded-full
+                    ${auction.status === 'active' ? 'bg-green-100 text-green-700' :
+                                        auction.status === 'pending' ? 'bg-yellow-100 text-yellow-700' :
+                                            'bg-gray-100 text-gray-700'}`}>
+                                    {auction.status}
+                                </span>
+                                {canCancel && (
+                                    <div className="flex gap-3">
+                                        <button
+                                            onClick={() => navigate(`/auction/edit/${id}`)}
+                                            className="text-blue-600 hover:text-blue-800 font-medium text-sm transition-colors"
+                                        >
+                                            Edit
+                                        </button>
+                                        <button
+                                            onClick={handleCancel}
+                                            className="text-red-500 hover:text-red-700 font-medium text-sm transition-colors"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
                             <h1 className="text-2xl font-bold text-gray-900">{auction.title}</h1>
                             <p className="text-gray-500 mt-1">Category: {auction.category || 'General'}</p>
 
@@ -111,17 +213,41 @@ const AuctionDetail = () => {
                             )}
                         </div>
 
-                        {/* Bid Form */}
-                        {auction.status === 'active' && (
+                        {/* Bid Form or Status Message */}
+                        {auction.status === 'active' && !isOwner ? (
                             <BidForm
                                 auctionId={auction.id}
                                 currentBid={auction.current_bid}
                                 minIncrement={auction.bid_increment || 1}
                             />
+                        ) : (
+                            <div className="bg-white rounded-xl p-6 shadow-md text-center">
+                                {auction.status === 'ended' || auction.status === 'sold' ? (
+                                    <div className="text-gray-500">
+                                        <h3 className="text-xl font-bold mb-2">Auction Ended</h3>
+                                        <p>This auction has ended. No further bids are accepted.</p>
+                                    </div>
+                                ) : auction.status === 'cancelled' ? (
+                                    <div className="text-red-500">
+                                        <h3 className="text-xl font-bold mb-2">Auction Cancelled</h3>
+                                        <p>This auction was cancelled by the seller or admin.</p>
+                                    </div>
+                                ) : auction.status === 'pending' ? (
+                                    <div className="text-yellow-600">
+                                        <h3 className="text-xl font-bold mb-2">Starting Soon</h3>
+                                        <p>Bidding for this item has not started yet.</p>
+                                    </div>
+                                ) : isOwner ? (
+                                    <div className="text-blue-600">
+                                        <h3 className="text-lg font-bold mb-2">Your Auction</h3>
+                                        <p>You cannot place bids on your own auction.</p>
+                                    </div>
+                                ) : null}
+                            </div>
                         )}
 
                         {/* Bid History */}
-                        <BidHistory auctionId={auction.id} />
+                        <BidHistory auctionId={auction.id} totalBids={auction.total_bids} />
                     </div>
                 </div>
             </div>

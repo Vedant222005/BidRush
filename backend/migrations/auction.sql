@@ -1,5 +1,5 @@
 -- Use an ENUM for status to save space and prevent typos
-CREATE TYPE auction_status AS ENUM ('pending', 'active', 'ended', 'cancelled', 'sold');
+CREATE TYPE auction_status AS ENUM ('pending', 'active', 'cancelled', 'sold','ended');
 
 CREATE TABLE auctions (
     id SERIAL PRIMARY KEY,
@@ -42,3 +42,4 @@ CREATE INDEX idx_auctions_search ON auctions USING GIN (
 -- Standard B-Tree indices for filtering and sorting
 CREATE INDEX idx_auctions_status_end_time ON auctions(status, end_time) WHERE status = 'active';
 CREATE INDEX idx_auctions_seller ON auctions(seller_id);
+CREATE INDEX idx_auctions_winner ON auctions(winner_id);

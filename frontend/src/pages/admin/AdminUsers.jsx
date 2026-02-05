@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import DataTable from '../../components/DataTable';
 import { adminAPI } from '../../services/api';
-
+import { useSocket } from '../../hooks/useSocket';
 /**
  * AdminUsers - User management page with ban/unban functionality
  */
@@ -35,8 +35,8 @@ const AdminUsers = () => {
             label: 'Status',
             render: (value) => (
                 <span className={`px-2 py-1 rounded text-xs font-medium ${value === 'banned' ? 'bg-red-100 text-red-600' :
-                        value === 'suspended' ? 'bg-yellow-100 text-yellow-600' :
-                            'bg-green-100 text-green-600'
+                    value === 'suspended' ? 'bg-yellow-100 text-yellow-600' :
+                        'bg-green-100 text-green-600'
                     }`}>
                     {value || 'active'}
                 </span>
@@ -109,6 +109,34 @@ const AdminUsers = () => {
     const handlePageChange = (page) => {
         fetchUsers(page);
     };
+
+    const socket = useSocket();
+
+    useEffect(() => {
+        if (!socket) return;
+
+        const handleNewUser = (newUser) => {
+            // Add new user to top of list
+            setUsers(prev => [newUser, ...prev]);
+        };
+
+        const handleBalanceUpdate = (data) => {
+            setUsers(prev => prev.map(user =>
+                user.id === data.userId ? { ...user, balance: data.balance } : user
+            ));
+        };
+
+        socket.emit('join_admin_room');
+        socket.on('new_user', handleNewUser);
+        socket.on('admin_balance_update', handleBalanceUpdate);
+
+        return () => {
+            socket.emit('leave_admin_room');
+            socket.off('new_user', handleNewUser);
+            socket.off('admin_balance_update', handleBalanceUpdate);
+        };
+    }, [socket]);
+
 
     return (
         <div>

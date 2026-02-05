@@ -1,5 +1,5 @@
 const con = require('../config/db');
-const { emitNewBid, emitBalanceUpdate } = require('../webSocket/socketServer');
+const { emitNewBid, emitBalanceUpdate, emitAuctionReset } = require('../webSocket/socketServer');
 const BidRepo = require('../repositories/bidRepository');
 const AuctionRepo = require('../repositories/auctionRepository');
 const UserRepo = require('../repositories/userRepository');
@@ -99,8 +99,13 @@ const createBid = async (req, res) => {
 
     // A. Refund the Previous Bidder (If they exist) - Use repository
     if (lastBidder) {
-      await UserRepo.updateBalance(client, lastBidder.bidder_id, parseFloat(lastBidder.amount), null);
-      await BidRepo.markBidAsOutbid(client, auction_id);
+      // Look up previous bidder to get version for optimistic locking
+      const prevUser = await UserRepo.lockAndGetUser(client, lastBidder.bidder_id);
+
+      if (prevUser) {
+        await UserRepo.updateBalance(client, lastBidder.bidder_id, parseFloat(lastBidder.amount), prevUser.version);
+        await BidRepo.markBidAsOutbid(client, auction_id);
+      }
     }
 
     // B. Deduct Tokens from New Bidder - Use repository
@@ -125,9 +130,11 @@ const createBid = async (req, res) => {
     await client.query('COMMIT');
 
     // Trigger Real-time updates (After successful commit)
-    emitNewBid(auction_id, {
+    emitNewBid({
       ...newBid,
-      new_balance: updatedUser.balance
+      new_balance: updatedUser.balance,
+      username: req.user.username,
+      auction_title: auction.title
     });
 
     // Notify current bidder of their new balance
@@ -225,13 +232,18 @@ const cancelBid = async (req, res) => {
     await BidRepo.cancelBid(client, bid_id);
 
     // 6. RESTART THE AUCTION - Use repository
-    await AuctionRepo.resetAuction(client, bid.auction_id);
+    const updatedAuction = await AuctionRepo.resetAuction(client, bid.auction_id);
 
     // 7. COMMIT
     await client.query('COMMIT');
 
     // Notify user of refund
     emitBalanceUpdate(bid.bidder_id, refundedUser.balance);
+
+    // Notify everyone of reset
+    if (updatedAuction) {
+      emitAuctionReset(updatedAuction);
+    }
 
     res.status(200).json({
       message: 'Winning bid cancelled. Money refunded and auction has been restarted.',

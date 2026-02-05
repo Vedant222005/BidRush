@@ -15,30 +15,23 @@ const { ZodError } = require('zod');
 const validate = (schema) => {
     return async (req, res, next) => {
         try {
-            // Validate the request against the schema
             await schema.parseAsync({
                 body: req.body,
                 query: req.query,
                 params: req.params
             });
 
-            // If validation passes, continue to next middleware/controller
             next();
         } catch (error) {
-            // Handle Zod validation errors
             if (error instanceof ZodError) {
-                const errorMessages = error.errors.map((issue) => ({
-                    field: issue.path.join('.'),
-                    message: issue.message
-                }));
+                // Take FIRST real error
+                const firstIssue = error.issues[0];
 
                 return res.status(400).json({
-                    message: 'Validation failed',
-                    errors: errorMessages
+                    message: firstIssue.message
                 });
             }
 
-            // Handle unexpected errors
             return res.status(500).json({
                 message: 'Internal server error during validation'
             });

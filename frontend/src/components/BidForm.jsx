@@ -2,56 +2,51 @@ import { useState, useEffect } from 'react';
 import { useSocket } from '../hooks/useSocket';
 import { bidAPI } from '../services/api';
 
-/**
- * BidForm Component
- * 
- * HOOKS USED:
- * - useState - Manages bidAmount input and loading/error states
- * - useEffect - Listens for real-time bid updates via WebSocket
- * - useSocket (custom) - Connects to Socket.io for real-time updates
- * 
- * PROPS:
- * - auctionId: ID of auction to place bid on
- * - currentBid: Current highest bid amount
- * - minIncrement: Minimum bid increment (default 1)
- * - onBidPlaced: Callback after successful bid
- * 
- * PURPOSE:
- * - Form to place new bid on auction
- * - Shows real-time updates when others bid
- */
 const BidForm = ({ auctionId, currentBid, minIncrement = 1, onBidPlaced }) => {
     const [bidAmount, setBidAmount] = useState('');
+    const [currentHighestBid, setCurrentHighestBid] = useState(currentBid);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const [latestBid, setLatestBid] = useState(currentBid);
 
     const socket = useSocket();
 
-    // Calculate minimum required bid
-    const minBid = parseFloat(latestBid) + parseFloat(minIncrement);
+    // Sync when prop changes
+    useEffect(() => {
+        setCurrentHighestBid(currentBid);
+    }, [currentBid]);
 
     // Listen for real-time bid updates
     useEffect(() => {
         if (!socket) return;
 
-        socket.emit('join_auction', auctionId);
+        const handleNewBid = (newBid) => {
+            if (newBid.auction_id === auctionId) {
+                setCurrentHighestBid(newBid.amount);
+            }
+        };
 
-        socket.on('new_bid', (data) => {
-            setLatestBid(data.amount);
-        });
+        const handleAuctionReset = (resetAuction) => {
+            if (resetAuction.id === auctionId) {
+                setCurrentHighestBid(resetAuction.current_bid);
+            }
+        };
+
+        socket.on('new_bid', handleNewBid);
+        socket.on('auction_reset', handleAuctionReset);
 
         return () => {
-            socket.emit('leave_auction', auctionId);
-            socket.off('new_bid');
+            socket.off('new_bid', handleNewBid);
+            socket.off('auction_reset', handleAuctionReset);
         };
     }, [socket, auctionId]);
+
+    const minBid = Number(currentHighestBid) + Number(minIncrement);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
 
-        const amount = parseFloat(bidAmount);
+        const amount = Number(bidAmount);
 
         if (isNaN(amount) || amount < minBid) {
             setError(`Minimum bid is ₹${minBid.toLocaleString('en-IN')}`);
@@ -64,15 +59,9 @@ const BidForm = ({ auctionId, currentBid, minIncrement = 1, onBidPlaced }) => {
             const data = await bidAPI.placeBid(auctionId, amount);
             setBidAmount('');
 
-            // Update balance immediately from response (WebSocket will also update)
-            if (data.newBalance !== undefined) {
-                // The AuthContext will be updated via WebSocket, but this is a backup
-                console.log('New balance from API:', data.newBalance);
-            }
-
             if (onBidPlaced) onBidPlaced(data.bid);
         } catch (err) {
-            setError(err.message);
+            setError(err.message || 'Failed to place bid');
         } finally {
             setLoading(false);
         }
@@ -83,7 +72,7 @@ const BidForm = ({ auctionId, currentBid, minIncrement = 1, onBidPlaced }) => {
             <div className="mb-4">
                 <p className="text-sm text-gray-500">Current Bid</p>
                 <p className="text-3xl font-bold text-orange-500">
-                    ₹{parseFloat(latestBid).toLocaleString('en-IN')}
+                    ₹{currentHighestBid.toLocaleString('en-IN')}
                 </p>
             </div>
 

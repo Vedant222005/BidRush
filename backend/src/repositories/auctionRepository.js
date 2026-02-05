@@ -11,13 +11,41 @@
  * Create new auction
  */
 const createAuction = async (client, auctionData) => {
-    const { seller_id, title, description, category, starting_bid, end_time } = auctionData;
+    const {
+        seller_id,
+        title,
+        description,
+        category,
+        start_time,
+        starting_bid,
+        end_time
+    } = auctionData;
 
     const result = await client.query(
-        `INSERT INTO auctions (seller_id, title, description, category, starting_bid, current_bid, end_time, status)
-     VALUES ($1, $2, $3, $4, $5, $5, $6, 'pending')
-     RETURNING id`,
-        [seller_id, title, description, category, starting_bid, end_time]
+        `INSERT INTO auctions (
+            seller_id, 
+            title, 
+            description, 
+            category, 
+            start_time, 
+            starting_bid, 
+            current_bid, -- Added
+            end_time, 
+            status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) -- Must match column count (9)
+        RETURNING *`,
+        [
+            seller_id,
+            title,
+            description,
+            category,
+            start_time,
+            starting_bid,
+            starting_bid, // current_bid starts equal to starting_bid
+            end_time,
+            'pending'      // status
+        ]
     );
 
     return result.rows[0];
@@ -57,11 +85,12 @@ const lockAndGetAuction = async (client, auctionId) => {
 const getAuctionById = async (con, auctionId) => {
     const result = await con.query(
         `SELECT a.*, 
-            ARRAY_AGG(ai.image_url ORDER BY ai.display_order) as images
-     FROM auctions a
-     LEFT JOIN auction_images ai ON a.id = ai.auction_id
-     WHERE a.id = $1
-     GROUP BY a.id`,
+       -- COALESCE handles nulls; FILTER removes null elements from the array
+       COALESCE(ARRAY_REMOVE(ARRAY_AGG(ai.image_url ORDER BY ai.display_order), NULL), '{}') as images
+FROM auctions a
+LEFT JOIN auction_images ai ON a.id = ai.auction_id
+WHERE a.id = $1
+GROUP BY a.id`,
         [auctionId]
     );
     return result.rows[0];
@@ -84,7 +113,11 @@ const getAllAuctions = async (con, filters) => {
     let paramCount = 1;
 
     if (status) {
-        query += ` AND a.status = $${paramCount}`;
+        if (Array.isArray(status)) {
+            query += ` AND a.status = ANY($${paramCount})`;
+        } else {
+            query += ` AND a.status = $${paramCount}`;
+        }
         params.push(status);
         paramCount++;
     }
@@ -113,7 +146,11 @@ const getAuctionCount = async (con, filters) => {
     let paramCount = 1;
 
     if (status) {
-        query += ` AND status = $${paramCount}`;
+        if (Array.isArray(status)) {
+            query += ` AND status = ANY($${paramCount})`;
+        } else {
+            query += ` AND status = $${paramCount}`;
+        }
         params.push(status);
         paramCount++;
     }
@@ -191,15 +228,17 @@ const getSellerAuctionCount = async (con, sellerId) => {
  * Reset auction to starting state (after bid cancel)
  */
 const resetAuction = async (client, auctionId) => {
-    await client.query(
+    const result = await client.query(
         `UPDATE auctions 
      SET current_bid = starting_bid, 
          total_bids = 0, 
          version = version + 1,
          last_bid_at = NULL
-     WHERE id = $1`,
+     WHERE id = $1
+     RETURNING *`,
         [auctionId]
     );
+    return result.rows[0];
 };
 
 module.exports = {

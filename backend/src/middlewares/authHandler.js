@@ -4,10 +4,10 @@ const con = require('../config/db');
 const authMiddleware = async (req, res, next) => {
   try {
     // Get token from HTTP-only cookie
-    const token = req.cookies.token;
+    const token = req.cookies.accessToken;
 
     if (!token) {
-      return res.status(401).json({ message: 'Access denied. No token provided.' });
+      return res.status(401).json({ message: 'please login' });
     }
 
     // Verify token

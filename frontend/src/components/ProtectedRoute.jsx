@@ -32,7 +32,7 @@ const ProtectedRoute = ({ children }) => {
 
     // Redirect to unauthorized page if not logged in
     if (!user) {
-        return <Navigate to="/unauthorized" replace />;
+        return <Navigate to="/login" replace />;
     }
 
     // Render protected content

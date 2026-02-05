@@ -14,7 +14,8 @@ import { useAuth } from '../context/AuthContext';
 const BalanceCard = () => {
     const { user } = useAuth();
     const balance = user?.balance || 0;
-
+    
+    
     return (
         <div className="bg-gradient-to-r from-orange-500 to-orange-600 rounded-xl p-6 text-white shadow-lg">
             <div className="flex justify-between items-start">

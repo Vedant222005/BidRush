@@ -1,9 +1,13 @@
 const con = require('../config/db');
 const AuctionRepo = require('../repositories/auctionRepository');
+const { emitAuctionUpdate } = require('../webSocket/socketServer');
+const { emitNewAuction, emitBalanceUpdate } = require('../webSocket/socketServer');
+const BidRepo = require('../repositories/bidRepository');
+const UserRepo = require('../repositories/userRepository');
 
 // Create new auction
 const createAuction = async (req, res) => {
-    const { title, description, category, starting_bid, end_time, images } = req.body;
+    const { title, description, category, start_time, starting_bid, end_time, images } = req.body;
     const seller_id = req.user.id;
 
     const client = await con.connect();
@@ -23,17 +27,27 @@ const createAuction = async (req, res) => {
 
         const now = Date.now();
         const end = new Date(end_time).getTime();
+        const start = new Date(start_time).getTime();
+
+        if (!start || start <= now) {
+            throw new Error('Auction start time must be in the future.');
+        }
 
         if (!end || end <= now) {
             throw new Error('Auction end time must be in the future.');
         }
 
+        if (end < start) {
+            throw new Error('Auction end time must be greater than start time');
+        }
+
         const minDuration = 60 * 60 * 1000; // 1 hour
-        if (end - now < minDuration) {
+        if (end - start < minDuration) {
             throw new Error('Auction must run for at least 1 hour.');
         }
 
         // --- 2. CREATE AUCTION USING REPOSITORY ---
+        const startDate = new Date(start_time);
         const endDate = new Date(end_time);
 
         const auction = await AuctionRepo.createAuction(client, {
@@ -42,6 +56,7 @@ const createAuction = async (req, res) => {
             description,
             category,
             starting_bid,
+            start_time: startDate,
             end_time: endDate
         });
 
@@ -49,6 +64,11 @@ const createAuction = async (req, res) => {
         await AuctionRepo.insertAuctionImages(client, auction.id, images);
 
         await client.query('COMMIT');
+
+        emitNewAuction({
+            ...auction,
+            seller_name: req.user.username
+        });
 
         res.status(201).json({
             message: 'Auction created successfully and is now pending.',
@@ -105,6 +125,33 @@ const deleteAuction = async (req, res) => {
             return res.status(400).json({ message: 'Auction already closed' });
         }
 
+        // --- REFUND LOGIC START ---
+        if (hasBids) {
+            // Get the current winning bid
+            const winningBid = await BidRepo.lockAndGetWinningBid(client, id);
+
+            if (winningBid) {
+                // Fetch the user to get current version (Optimistic Locking)
+                const userToRefund = await UserRepo.lockAndGetUser(client, winningBid.bidder_id);
+
+                if (userToRefund) {
+                    // Refund the user with explicit version check
+                    const refundedUser = await UserRepo.updateBalance(
+                        client,
+                        winningBid.bidder_id,
+                        parseFloat(winningBid.amount),
+                        userToRefund.version
+                    );
+
+                    if (refundedUser) {
+                        // Emit balance update to the user
+                        emitBalanceUpdate(winningBid.bidder_id, refundedUser.balance);
+                    }
+                }
+            }
+        }
+        // --- REFUND LOGIC END ---
+
         // Cancel the auction (we'll keep this query in controller for now as it's a special status update)
         const result = await client.query(
             `UPDATE auctions 
@@ -120,6 +167,10 @@ const deleteAuction = async (req, res) => {
         }
 
         await client.query('COMMIT');
+
+        // Real-time update
+        emitAuctionUpdate(result.rows[0]);
+
         res.status(200).json({ message: 'Auction cancelled', auction: result.rows[0] });
 
     } catch (err) {
@@ -201,6 +252,10 @@ const updateAuction = async (req, res) => {
         }
 
         await client.query('COMMIT');
+
+        // Real-time update
+        emitAuctionUpdate(result.rows[0]);
+
         res.status(200).json({ message: 'Auction updated', auction: result.rows[0] });
 
     } catch (err) {
@@ -212,22 +267,25 @@ const updateAuction = async (req, res) => {
     }
 };
 
-// Get all active auctions with pagination
+// Get all auctions with pagination
 const getAllAuctions = async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
         const offset = (page - 1) * limit;
 
+        const statusParam = req.query.status;
+        const status = statusParam ? statusParam.split(',') : ['active'];
+
         // Use repository
         const auctions = await AuctionRepo.getAllAuctions(con, {
-            status: 'active',
+            status,
             limit,
             offset
         });
 
         const totalItems = await AuctionRepo.getAuctionCount(con, {
-            status: 'active'
+            status
         });
 
         res.status(200).json({
@@ -365,6 +423,10 @@ const activateAuction = async (req, res) => {
         }
 
         await client.query('COMMIT');
+
+        // Real-time update
+        emitAuctionUpdate(activatedAuction);
+
         res.status(200).json({ message: 'Auction activated!', auction: activatedAuction });
 
     } catch (err) {

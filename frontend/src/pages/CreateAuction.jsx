@@ -21,6 +21,7 @@ const CreateAuction = () => {
         title: '',
         description: '',
         category: '',
+        start_time: ' ',
         starting_bid: '',
         end_time: ''
     });
@@ -57,7 +58,7 @@ const CreateAuction = () => {
         setError('');
 
         // 1. Validation
-        if (!formData.title || !formData.starting_bid || !formData.end_time) {
+        if (!formData.title || !formData.starting_bid || !formData.end_time || !formData.start_time) {
             setError('Please fill in all required fields');
             return;
         }
@@ -149,7 +150,7 @@ const CreateAuction = () => {
                     </div>
 
                     {/* Pricing and Timing Group */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">Starting Bid (Tokens) *</label>
                             <input
@@ -159,6 +160,17 @@ const CreateAuction = () => {
                                 onChange={handleChange}
                                 placeholder="100"
                                 min="1"
+                                className="input-field"
+                                required
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Start Date & Time *</label>
+                            <input
+                                type="datetime-local"
+                                name="start_time"
+                                value={formData.start_time}
+                                onChange={handleChange}
                                 className="input-field"
                                 required
                             />
@@ -211,8 +223,8 @@ const CreateAuction = () => {
                         type="submit"
                         disabled={loading}
                         className={`w-full py-4 rounded-xl font-bold text-white transition-all ${loading
-                                ? 'bg-gray-400 cursor-not-allowed'
-                                : 'bg-orange-500 hover:bg-orange-600 shadow-lg active:transform active:scale-95'
+                            ? 'bg-gray-400 cursor-not-allowed'
+                            : 'bg-orange-500 hover:bg-orange-600 shadow-lg active:transform active:scale-95'
                             }`}
                     >
                         {uploading ? 'Uploading Images...' : loading ? 'Finalizing Auction...' : 'Launch Auction'}

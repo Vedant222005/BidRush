@@ -43,7 +43,7 @@ const LoginForm = () => {
                 email: formData.email,
                 password: formData.password
             });
-            navigate('/dashboard');
+            navigate('/');
         } catch (err) {
             setError(err.message || 'Login failed. Please try again.');
         } finally {

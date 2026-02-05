@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import DataTable from '../../components/DataTable';
 import { adminAPI } from '../../services/api';
-
+import { useSocket } from '../../hooks/useSocket';
 /**
  * AdminAuctions - Auction management page
  */
+
 const AdminAuctions = () => {
     const [auctions, setAuctions] = useState([]);
     const [pagination, setPagination] = useState({ currentPage: 1, totalPages: 1 });
@@ -104,6 +105,42 @@ const AdminAuctions = () => {
     const handlePageChange = (page) => {
         fetchAuctions(page);
     };
+
+    const socket = useSocket();
+
+    useEffect(() => {
+        if (!socket) return;
+
+        const handleNewAuction = (newAuction) => {
+            setAuctions(prev => [newAuction, ...prev]);
+        };
+
+        // Also listen for status updates (e.g. Activated/Cancelled)
+        const handleAuctionUpdate = (updatedAuction) => {
+            setAuctions(prev => prev.map(auc =>
+                auc.id === updatedAuction.id ? updatedAuction : auc
+            ));
+        };
+
+        const handleNewBid = (bidData) => {
+            setAuctions(prev => prev.map(auc =>
+                auc.id === bidData.auction_id
+                    ? { ...auc, current_bid: bidData.amount, total_bids: parseInt(auc.total_bids) + 1 }
+                    : auc
+            ));
+        };
+
+        socket.on('new_auction', handleNewAuction);
+        socket.on('auction_update', handleAuctionUpdate);
+        socket.on('new_bid', handleNewBid);
+
+        return () => {
+            socket.off('new_auction', handleNewAuction);
+            socket.off('auction_update', handleAuctionUpdate);
+            socket.off('new_bid', handleNewBid);
+        };
+    }, [socket]);
+
 
     return (
         <div>

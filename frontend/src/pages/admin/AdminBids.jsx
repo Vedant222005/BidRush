@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import DataTable from '../../components/DataTable';
 import { adminAPI } from '../../services/api';
-
+import { useSocket } from '../../hooks/useSocket';
 /**
  * AdminBids - Bid management page with auction filter
  */
@@ -104,6 +104,27 @@ const AdminBids = () => {
             }
         }
     };
+    
+    const socket = useSocket();
+
+    useEffect(() => {
+        if (!socket) return;
+
+        const handleNewBid = (newBid) => {
+            // Only add if we are viewing "All Auctions" OR the specific auction the bid belongs to
+            if (selectedAuction === 'all' || selectedAuction == newBid.auction_id) {
+                // Prepend new bid to the list
+                setBids(prev => [newBid, ...prev]);
+            }
+        };
+
+        socket.on('new_bid', handleNewBid);
+
+        return () => {
+            socket.off('new_bid', handleNewBid);
+        };
+    }, [socket, selectedAuction]);
+
 
     return (
         <div className="space-y-6">

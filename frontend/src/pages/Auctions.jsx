@@ -19,12 +19,17 @@ const Auctions = () => {
 
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
                 {/* Header */}
-                <div className="mb-8">
-                    <h1 className="text-3xl font-bold text-gray-900">All Auctions</h1>
-                    <p className="text-gray-500 mt-2">Browse and bid on amazing items</p>
+                <div className="mb-8 flex justify-between items-center">
+                    <div>
+                        <h1 className="text-3xl font-bold text-gray-900">Live Auctions</h1>
+                        <p className="text-gray-500 mt-2">Bid on active and upcoming items</p>
+                    </div>
+                    <a href="/auctions/history" className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+                        View Auction History →
+                    </a>
                 </div>
 
-                {/* Search & Filters */}
+                {/* Search & Filters (Existing) */}
                 <div className="bg-white rounded-xl p-4 shadow-sm mb-8">
                     <div className="flex flex-col md:flex-row gap-4">
                         <div className="flex-1 relative">
@@ -43,7 +48,7 @@ const Auctions = () => {
                                 className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
                             />
                         </div>
-
+                        {/* Filters dropdowns preserved */}
                         <select className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500">
                             <option value="">All Categories</option>
                             <option value="electronics">Electronics</option>
@@ -61,8 +66,10 @@ const Auctions = () => {
                     </div>
                 </div>
 
-                {/* Auction Grid */}
-                <AuctionGrid limit={12} />
+                {/* Live & Upcoming Auctions Grid */}
+                <div>
+                    <AuctionGrid limit={12} filters={{ status: 'active,pending' }} />
+                </div>
             </div>
         </div>
     );
