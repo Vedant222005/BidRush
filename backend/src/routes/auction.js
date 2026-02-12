@@ -1,5 +1,5 @@
 const Router = require('express');
-const { createAuction, getAllAuctions, getUserAuctions, updateAuction, deleteAuction, getAuctionById, getAllAuctionsAdmin, activateAuction } = require('../controllers/auctionController');
+const { createAuction, getAllAuctions, getUserAuctions, updateAuction, deleteAuction, getAuctionById, getAllAuctionsAdmin, activateAuction, cancelAuction } = require('../controllers/auctionController');
 const adminMiddleware = require('../middlewares/adminMiddleware');
 const authMiddleware = require('../middlewares/authHandler');
 const validate = require('../middlewares/validate');
@@ -16,7 +16,7 @@ router.get('/:id', getAuctionById);
 // User routes
 router.post('/create', authMiddleware, validate(createAuctionSchema), createAuction);
 router.patch('/update/:id', authMiddleware, validate(updateAuctionSchema), updateAuction);
-router.delete('/delete/:id', authMiddleware, validate(deleteAuctionSchema), deleteAuction);
+router.delete('/delete/:id', authMiddleware, validate(deleteAuctionSchema), cancelAuction);
 
 // Admin routes
 router.get('/admin/all', authMiddleware, adminMiddleware, getAllAuctionsAdmin);

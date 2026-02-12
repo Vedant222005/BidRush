@@ -7,9 +7,7 @@
  * - Reusable across multiple controllers
  */
 
-/**
- * Get bids for an auction with pagination
- */
+// Get bids for an auction with pagination (done)
 const getBidsByAuction = async (con, auctionId, limit, offset) => {
     const result = await con.query(
         `SELECT b.id, b.amount, b.status, b.placed_at, b.auction_id,
@@ -118,24 +116,20 @@ const getUserBidCount = async (con, userId) => {
     return parseInt(result.rows[0].count);
 };
 
-/**
- * Cancel bid
- */
+//Cancel bid (done)
 const cancelBid = async (client, bidId) => {
     await client.query(
         `UPDATE bids SET status = 'cancelled' WHERE id = $1`,
         [bidId]
     );
+
 };
 
-/**
- * Get bid by ID with auction and user info (for cancel operation)
- */
+//Get bid by ID with auction and user info (for cancel operation)(done)(for update)
 const getBidWithDetails = async (client, bidId) => {
     const result = await client.query(
         `SELECT b.id, b.status, b.bidder_id, b.amount, b.auction_id, 
-            a.status as auction_status, a.starting_bid, 
-            u.version as user_version
+            a.status as auction_status, a.starting_bid
      FROM bids b
      JOIN auctions a ON b.auction_id = a.id
      JOIN users u ON b.bidder_id = u.id
@@ -146,9 +140,7 @@ const getBidWithDetails = async (client, bidId) => {
     return result.rows[0];
 };
 
-/**
- * Get all bids (admin) with pagination and optional auction filter
- */
+//Get all bids (admin) with pagination and optional auction filter (done)
 const getAllBids = async (con, filters) => {
     const { limit, offset, auction_id } = filters;
 

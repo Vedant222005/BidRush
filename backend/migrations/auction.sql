@@ -1,5 +1,6 @@
 -- Use an ENUM for status to save space and prevent typos
-CREATE TYPE auction_status AS ENUM ('pending', 'active', 'cancelled', 'sold','ended');
+CREATE TYPE auction_status AS ENUM ('pending', 'active', 'cancelled', 'sold','ended','expired');
+CREATE TYPE CATEGORIES = ['electronics', 'art', 'collectibles', 'fashion', 'vehicles', 'other'];
 
 CREATE TABLE auctions (
     id SERIAL PRIMARY KEY,
@@ -8,27 +9,24 @@ CREATE TABLE auctions (
     -- Auction details
     title VARCHAR(255) NOT NULL,
     description TEXT,
-    category VARCHAR(100),
+    category CATEGORIES default 'other',
     version INT DEFAULT 1,  
     
     -- Pricing & Stats
     starting_bid DECIMAL(12,2) NOT NULL,
     current_bid DECIMAL(12,2) DEFAULT 0,
-    reserve_price DECIMAL(12,2),
     bid_increment DECIMAL(10,2) DEFAULT 1.00,
     total_bids INT DEFAULT 0, -- Denormalized count for performance
     
     -- Timing
     start_time TIMESTAMPTZ DEFAULT NOW(),
     end_time TIMESTAMPTZ NOT NULL,
-    last_bid_at TIMESTAMPTZ,
     
     -- Status tracking
     status auction_status DEFAULT 'pending', 
     winner_id INT REFERENCES users(id),
     
-    -- Concurrency & Audit
-    version INT DEFAULT 1,
+
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

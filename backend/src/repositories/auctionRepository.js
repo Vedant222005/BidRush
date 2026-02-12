@@ -7,9 +7,7 @@
  * - Reusable across multiple controllers
  */
 
-/**
- * Create new auction
- */
+//Create new auction(done)
 const createAuction = async (client, auctionData) => {
     const {
         seller_id,
@@ -65,12 +63,10 @@ const insertAuctionImages = async (client, auctionId, images) => {
     }
 };
 
-/**
- * Lock and get auction (for transactions)
- */
+// Lock and get auction (for transactions)(done)
 const lockAndGetAuction = async (client, auctionId) => {
     const result = await client.query(
-        `SELECT id, seller_id, title, current_bid, starting_bid, end_time, status, total_bids, version, bid_increment
+        `SELECT id, seller_id, title, current_bid, starting_bid, end_time, status, total_bids, bid_increment
      FROM auctions 
      WHERE id = $1 
      FOR UPDATE`,
@@ -79,13 +75,10 @@ const lockAndGetAuction = async (client, auctionId) => {
     return result.rows[0];
 };
 
-/**
- * Get auction by ID (no lock)
- */
+//Get auction by ID (no lock)(done)
 const getAuctionById = async (con, auctionId) => {
     const result = await con.query(
         `SELECT a.*, 
-       -- COALESCE handles nulls; FILTER removes null elements from the array
        COALESCE(ARRAY_REMOVE(ARRAY_AGG(ai.image_url ORDER BY ai.display_order), NULL), '{}') as images
 FROM auctions a
 LEFT JOIN auction_images ai ON a.id = ai.auction_id
@@ -96,16 +89,14 @@ GROUP BY a.id`,
     return result.rows[0];
 };
 
-/**
- * Get all auctions with filters and pagination
- */
+//Get all auctions with filters and pagination(done)
 const getAllAuctions = async (con, filters) => {
     const { status, category, limit, offset } = filters;
 
     let query = `
     SELECT a.id, a.title, a.description, a.category, a.current_bid, a.starting_bid,
            a.end_time, a.status, a.total_bids, a.created_at,
-           (SELECT image_url FROM auction_images WHERE auction_id = a.id AND is_primary = true LIMIT 1) as primary_image
+           (SELECT image_url FROM auction_images WHERE auction_id = a.id  LIMIT 1) as primary_image
     FROM auctions a
     WHERE 1=1`;
 
@@ -135,9 +126,7 @@ const getAllAuctions = async (con, filters) => {
     return result.rows;
 };
 
-/**
- * Get total auction count with filters
- */
+//Get total auction count with filters (done)
 const getAuctionCount = async (con, filters) => {
     const { status, category } = filters;
 
@@ -176,34 +165,28 @@ const updateAuctionBid = async (client, auctionId, bidAmount) => {
     );
 };
 
-/**
- * Activate auction (Admin only)
- */
-const activateAuction = async (client, auctionId, version) => {
+//Activate auction (Admin only)(done)
+const activateAuction = async (client, auctionId) => {
     const result = await client.query(
         `UPDATE auctions 
-     SET status = 'active', version = version + 1
-     WHERE id = $1 AND version = $2
+     SET status = 'active'
+     WHERE id = $1 
      RETURNING *`,
-        [auctionId, version]
+        [auctionId]
     );
     return result.rows[0];
 };
 
-/**
- * Delete auction
- */
-const deleteAuction = async (client, auctionId) => {
-    await client.query('DELETE FROM auctions WHERE id = $1', [auctionId]);
+//cancel auction
+const dbcancelAuction = async (client, auctionId) => {
+    await client.query(`update auctions set status='cancelled' WHERE id = $1`, [auctionId]);
 };
 
-/**
- * Get auctions by seller
- */
+// Get auctions by seller (done)
 const getAuctionsBySeller = async (con, sellerId, limit, offset) => {
     const result = await con.query(
         `SELECT a.id, a.title, a.status, a.current_bid, a.total_bids, a.end_time, a.created_at,
-            (SELECT image_url FROM auction_images WHERE auction_id = a.id AND is_primary = true LIMIT 1) as primary_image
+            (SELECT image_url FROM auction_images WHERE auction_id = a.id LIMIT 1) as primary_image
      FROM auctions a
      WHERE a.seller_id = $1
      ORDER BY a.created_at DESC
@@ -213,9 +196,7 @@ const getAuctionsBySeller = async (con, sellerId, limit, offset) => {
     return result.rows;
 };
 
-/**
- * Get seller auction count
- */
+//Get seller auction count(done)
 const getSellerAuctionCount = async (con, sellerId) => {
     const result = await con.query(
         'SELECT COUNT(*) FROM auctions WHERE seller_id = $1',
@@ -232,7 +213,6 @@ const resetAuction = async (client, auctionId) => {
         `UPDATE auctions 
      SET current_bid = starting_bid, 
          total_bids = 0, 
-         version = version + 1,
          last_bid_at = NULL
      WHERE id = $1
      RETURNING *`,
@@ -250,7 +230,7 @@ module.exports = {
     getAuctionCount,
     updateAuctionBid,
     activateAuction,
-    deleteAuction,
+    dbcancelAuction,
     getAuctionsBySeller,
     getSellerAuctionCount,
     resetAuction

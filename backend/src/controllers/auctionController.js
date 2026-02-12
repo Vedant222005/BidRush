@@ -1,11 +1,15 @@
 const con = require('../config/db');
+const redis = require('../config/redis');
 const AuctionRepo = require('../repositories/auctionRepository');
 const { emitAuctionUpdate } = require('../webSocket/socketServer');
 const { emitNewAuction, emitBalanceUpdate } = require('../webSocket/socketServer');
 const BidRepo = require('../repositories/bidRepository');
 const UserRepo = require('../repositories/userRepository');
+const { CcancelAuction, CUpdateUserBalance, CauctionCache,CTotalBids, CwinningBid} = require('../cache/Functions/functions');
+const { publishStatusChange } = require('../queues/status/statusProducer');
+const { sendEmailQueue } = require('../queues/email/emailProducer');
 
-// Create new auction
+// Create new auction(redis)(done)
 const createAuction = async (req, res) => {
     const { title, description, category, start_time, starting_bid, end_time, images } = req.body;
     const seller_id = req.user.id;
@@ -14,8 +18,6 @@ const createAuction = async (req, res) => {
 
     try {
         await client.query('BEGIN');
-
-        // --- 1. BUSINESS VALIDATION ---
 
         if (!images || images.length === 0) {
             throw new Error('At least one image is required to list an item.');
@@ -59,8 +61,6 @@ const createAuction = async (req, res) => {
             start_time: startDate,
             end_time: endDate
         });
-
-        // --- 3. INSERT IMAGES USING REPOSITORY ---
         await AuctionRepo.insertAuctionImages(client, auction.id, images);
 
         await client.query('COMMIT');
@@ -84,108 +84,103 @@ const createAuction = async (req, res) => {
     }
 };
 
-// Delete (Cancel) auction - User before bids, Admin anytime
+// Delete (Cancel) auction - User before bids, Admin anytime(redis)(refund logic)(done)
 const deleteAuction = async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
     const isAdmin = req.user.role === 'admin';
+
+    // 1. READ-ONLY VALIDATION
+    // We check permissions but DO NOT lock DB rows yet.
     const client = await con.connect();
-
     try {
-        await client.query('BEGIN');
+        const { rows } = await client.query('SELECT * FROM auctions WHERE id = $1', [id]);
+        const auction = rows[0];
+         
+        if (!auction) return res.status(404).json({ message: 'Not found' });
+        if (auction.seller_id !== userId && !isAdmin) return res.status(403).json({ message: 'Unauthorized' });
+        
+        // 2. ATOMIC REDIS CANCEL & REFUND
+        // This stops new bids and updates the winner's cached balance instantly.
+        const redisResult = await CcancelAuction(id); // Use the Lua script provided earlier
 
-        // Use repository to fetch and lock
-        const auction = await AuctionRepo.lockAndGetAuction(client, id);
-
-        if (!auction) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ message: 'Auction not found' });
+        if (redisResult.error) {
+             return res.status(400).json({ message: redisResult.error });
         }
 
-        const isOwner = auction.seller_id === userId;
-        const hasBids = auction.total_bids > 0;
+        // 3. REAL-TIME UPDATES (Speed Layer)
+        // Frontend gets the update immediately.
+        const updatedAuction = { ...auction, status: 'cancelled', updated_at: new Date() };
+        emitAuctionUpdate(updatedAuction);
 
-        // Authorization
-        if (!isOwner && !isAdmin) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ message: 'Unauthorized' });
+        if (redisResult.refundedUserId) {
+            emitBalanceUpdate(
+                Number(redisResult.refundedUserId), 
+                Number(redisResult.newBalance)
+            );
         }
 
-        // User can only delete if NO bids
-        if (hasBids && !isAdmin) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({
-                message: 'Cannot delete auction with bids. Contact admin.'
-            });
-        }
+        // 4. QUEUE THE COMMAND (Truth Layer)
+        // We tell the worker: "Once you finish processing pending bids, close this auction."
+        publishStatusChange({
+            type: 'CANCEL_AUCTION_COMMAND',
+            auctionId: id,
+            reason: 'Admin Delete',
+            timestamp: Date.now()
+        });
 
-        // Already cancelled/ended
-        if (['cancelled', 'ended', 'sold'].includes(auction.status)) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: 'Auction already closed' });
-        }
-
-        // --- REFUND LOGIC START ---
-        if (hasBids) {
-            // Get the current winning bid
-            const winningBid = await BidRepo.lockAndGetWinningBid(client, id);
-
-            if (winningBid) {
-                // Fetch the user to get current version (Optimistic Locking)
-                const userToRefund = await UserRepo.lockAndGetUser(client, winningBid.bidder_id);
-
-                if (userToRefund) {
-                    // Refund the user with explicit version check
-                    const refundedUser = await UserRepo.updateBalance(
-                        client,
-                        winningBid.bidder_id,
-                        parseFloat(winningBid.amount),
-                        userToRefund.version
-                    );
-
-                    if (refundedUser) {
-                        // Emit balance update to the user
-                        emitBalanceUpdate(winningBid.bidder_id, refundedUser.balance);
-                    }
-                }
-            }
-        }
-        // --- REFUND LOGIC END ---
-
-        // Cancel the auction (we'll keep this query in controller for now as it's a special status update)
-        const result = await client.query(
-            `UPDATE auctions 
-             SET status = 'cancelled', version = version + 1, updated_at = NOW()
-             WHERE id = $1 AND version = $2
-             RETURNING *`,
-            [id, auction.version]
-        );
-
-        if (result.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(409).json({ message: 'Version conflict' });
-        }
-
-        await client.query('COMMIT');
-
-        // Real-time update
-        emitAuctionUpdate(result.rows[0]);
-
-        res.status(200).json({ message: 'Auction cancelled', auction: result.rows[0] });
+        return res.status(200).json({ message: 'Auction cancelled', auction: updatedAuction });
 
     } catch (err) {
-        await client.query('ROLLBACK');
-        console.error('Delete Error:', err);
-        res.status(500).json({ message: 'Internal server error' });
+        console.error(err);
+        return res.status(500).json({ message: 'Error' });
     } finally {
         client.release();
     }
 };
 
-// Update auction - User only, before bids
+const cancelAuction = async (req, res) => {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const isAdmin = req.user.role === 'admin';
+
+    // 1. READ-ONLY VALIDATION
+    // We check permissions but DO NOT lock DB rows yet.
+    const client = await con.connect();
+    try {
+        const { rows } = await client.query('SELECT * FROM auctions WHERE id = $1', [id]);
+        const auction = rows[0];
+         
+        if (!auction) return res.status(404).json({ message: 'Not found' });
+        if (auction.seller_id !== userId && !isAdmin) return res.status(403).json({ message: 'Unauthorized' });
+        
+        await AuctionRepo.dbcancelAuction(client,id);
+
+        
+        // Frontend gets the update immediately.
+        const updatedAuction = { ...auction, status: 'cancelled', updated_at: new Date() };
+        emitAuctionUpdate(updatedAuction);
+
+        if (redisResult.refundedUserId) {
+            emitBalanceUpdate(
+                Number(redisResult.refundedUserId), 
+                Number(redisResult.newBalance)
+            );
+        }
+        return res.status(200).json({ message: 'Auction cancelled', auction: updatedAuction });
+
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Error' });
+    } finally {
+        client.release();
+    }
+};
+
+// Update auction - User only, before bids (check version)(done)
 const updateAuction = async (req, res) => {
     const { id } = req.params;
-    const { title, description, category, reserve_price, end_time, version } = req.body;
+    const { title, description, category } = req.body;
     const userId = req.user.id;
     const client = await con.connect();
 
@@ -212,24 +207,11 @@ const updateAuction = async (req, res) => {
             return res.status(400).json({ message: 'Cannot update after bidding starts' });
         }
 
-        // Version check
-        if (auction.version !== Number(version)) {
-            await client.query('ROLLBACK');
-            return res.status(409).json({ message: 'Data outdated. Please refresh.' });
-        }
-
         // Cannot update closed auctions
         if (['cancelled', 'ended', 'sold'].includes(auction.status)) {
             await client.query('ROLLBACK');
             return res.status(400).json({ message: 'Cannot update closed auction' });
         }
-
-        // End time validation
-        if (end_time && new Date(end_time) <= new Date()) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: 'End time must be in the future' });
-        }
-
         // Update (keeping this in controller as it's complex update logic)
         const result = await client.query(
             `UPDATE auctions
@@ -237,13 +219,10 @@ const updateAuction = async (req, res) => {
                title = COALESCE($1, title),
                description = COALESCE($2, description),
                category = COALESCE($3, category),
-               reserve_price = COALESCE($4, reserve_price),
-               end_time = COALESCE($5, end_time),
-               version = version + 1,
                updated_at = NOW()
-             WHERE id = $6 AND version = $7
+             WHERE id = $4 
              RETURNING *`,
-            [title || null, description || null, category || null, reserve_price || null, end_time || null, id, version]
+            [title || null, description || null, category || null]
         );
 
         if (result.rows.length === 0) {
@@ -267,30 +246,85 @@ const updateAuction = async (req, res) => {
     }
 };
 
-// Get all auctions with pagination
+// Get all auctions with pagination(only chnage active acution data)(done)
 const getAllAuctions = async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
         const offset = (page - 1) * limit;
 
+        // Parse status (e.g. ?status=active,sold)
         const statusParam = req.query.status;
-        const status = statusParam ? statusParam.split(',') : ['active'];
+        const statusFilter = statusParam ? statusParam.split(',') : ['active'];
 
-        // Use repository
-        const auctions = await AuctionRepo.getAllAuctions(con, {
-            status,
+        // 1. Fetch Base Data from Postgres
+        // We fetch the items first based on the DB's knowledge
+        let auctions = await AuctionRepo.getAllAuctions(con, {
+            status: statusFilter,
             limit,
             offset
         });
 
+        // 2. Overlay Redis Data (Price AND Status)
+        // We use Promise.all to fetch Redis data for all items in parallel (Faster)
+        const enrichedAuctions = await Promise.all(auctions.map(async (auction) => {
+            // We only check Redis for 'active' auctions. 
+            // If DB says 'sold', it's final. If DB says 'active', it might be 'cancelled' in Redis.
+            if (auction.status === 'active') {
+                try {
+                    const pipe = redis.pipeline();
+                    
+                    // Queue up commands
+                    pipe.get(`auction:${auction.id}:current_bid`);
+                    pipe.hget(`auction:${auction.id}:meta`, 'total_bids');
+                    pipe.hget(`auction:${auction.id}:meta`, 'status'); // <--- CRITICAL: Get real-time status
+
+                    // Execute all at once
+                    const results = await pipe.exec();
+                    
+                    // Results format: [[err, value], [err, value], [err, value]]
+                    const currentBid = results[0][1];
+                    const totalBids = results[1][1];
+                    const redisStatus = results[2][1];
+
+                    // Overlay: Update Price
+                    if (currentBid) {
+                        auction.current_bid = parseFloat(currentBid);
+                    }
+                    
+                    // Overlay: Update Bid Count
+                    if (totalBids) {
+                        auction.total_bids = parseInt(totalBids);
+                    }
+
+                    // Overlay: Update Status 
+                    // (This fixes the "Zombie Auction" issue where DB is slow to update)
+                    if (redisStatus && redisStatus !== auction.status) {
+                        auction.status = redisStatus; 
+                    }
+
+                } catch (redisErr) {
+                    console.error(`Redis lookup failed for auction ${auction.id}`, redisErr);
+                    // On error, we just keep the DB values. No need to crash.
+                }
+            }
+            return auction;
+        }));
+
+        // 3. (Optional) Consistency Filter
+        // If the user requested ONLY 'active' auctions, but Redis revealed one is actually 'cancelled',
+        // we should remove it from this list to prevent frontend confusion.
+        const finalAuctions = enrichedAuctions.filter(a => statusFilter.includes(a.status));
+
+        // 4. Get Total Count (From DB)
+        // Note: This might be slightly off by 1-2 items during the "sync gap", but that is acceptable for pagination.
         const totalItems = await AuctionRepo.getAuctionCount(con, {
-            status
+            status: statusFilter
         });
 
         res.status(200).json({
             message: 'Auctions fetched successfully',
-            data: auctions,
+            data: finalAuctions,
             pagination: {
                 totalItems,
                 currentPage: page,
@@ -298,13 +332,14 @@ const getAllAuctions = async (req, res) => {
                 limit
             }
         });
+
     } catch (err) {
         console.error("Get Auctions Error:", err);
         res.status(500).json({ message: 'Failed to get auctions' });
     }
 };
 
-// Get auctions by seller
+// Get auctions by seller(only chnage active acution data)(done)
 const getUserAuctions = async (req, res) => {
     try {
         const { userId } = req.params;
@@ -312,8 +347,46 @@ const getUserAuctions = async (req, res) => {
         const limit = parseInt(req.query.limit) || 5;
         const offset = (page - 1) * limit;
 
-        // Use repository
+        // 1. Fetch Base Data from DB
         const auctions = await AuctionRepo.getAuctionsBySeller(con, userId, limit, offset);
+
+        // 2. Overlay Redis Data (Price, Bids, AND Status)
+        // Use Promise.all for parallel fetching
+        await Promise.all(auctions.map(async (auction) => {
+            if (auction.status === 'active') {
+                try {
+                    const pipe = redis.pipeline();
+                    
+                    pipe.get(`auction:${auction.id}:current_bid`);
+                    pipe.hget(`auction:${auction.id}:meta`, 'total_bids');
+                    pipe.hget(`auction:${auction.id}:meta`, 'status'); // <--- CRITICAL STATUS CHECK
+
+                    const results = await pipe.exec();
+
+                    // Extract results safely
+                    const currentBid = results[0][1];
+                    const totalBids = results[1][1];
+                    const redisStatus = results[2][1];
+
+                    if (currentBid) {
+                        auction.current_bid = parseFloat(currentBid);
+                    }
+                    if (totalBids) {
+                        auction.total_bids = parseInt(totalBids);
+                    }
+                    
+                    // Override status if Redis is ahead of DB (e.g. just cancelled)
+                    if (redisStatus && redisStatus !== auction.status) {
+                        auction.status = redisStatus;
+                    }
+
+                } catch (redisErr) {
+                    console.error(`Redis skip for auction ${auction.id}`, redisErr);
+                    // Continue with DB values if Redis fails
+                }
+            }
+        }));
+
         const totalItems = await AuctionRepo.getSellerAuctionCount(con, userId);
 
         res.status(200).json({
@@ -332,40 +405,130 @@ const getUserAuctions = async (req, res) => {
     }
 };
 
-// Get single auction by ID
+// Get single auction by ID(only chnage active acution data)(done)
 const getAuctionById = async (req, res) => {
     try {
         const { id } = req.params;
 
-        // Use repository
+        // 1. Get base auction data from DB
         const auction = await AuctionRepo.getAuctionById(con, id);
 
         if (!auction) {
             return res.status(404).json({ message: 'Auction not found' });
         }
 
+        // 2. For ACTIVE auctions, overlay Redis data (real-time)
+        // If DB says 'sold' or 'cancelled', we trust it.
+        // If DB says 'active', we must verify with Redis in case it was just cancelled.
+        if (auction.status === 'active') {
+            try {
+                const pipe = redis.pipeline();
+                
+                // Get Price & Winner
+                pipe.get(`auction:${id}:current_bid`);
+                pipe.get(`auction:${id}:winner_id`);
+                
+                // Get Meta (Bids Count & STATUS)
+                pipe.hget(`auction:${id}:meta`, 'total_bids');
+                pipe.hget(`auction:${id}:meta`, 'status'); // <--- CRITICAL ADDITION
+
+                const results = await pipe.exec();
+
+                // Extract Results: [[err, val], [err, val], ...]
+                const currentBid = results[0][1];
+                const winnerId = results[1][1];
+                const totalBids = results[2][1];
+                const redisStatus = results[3][1];
+
+                // Overlay Price
+                if (currentBid !== null) {
+                    auction.current_bid = parseFloat(currentBid);
+                }
+                
+                // Overlay Winner
+                if (winnerId !== null) {
+                    auction.winner_id = parseInt(winnerId);
+                }
+                
+                // Overlay Total Bids
+                if (totalBids !== null) {
+                    auction.total_bids = parseInt(totalBids);
+                }
+
+                // Overlay Status (Fixes the "Zombie Auction" issue)
+                if (redisStatus && redisStatus !== auction.status) {
+                    auction.status = redisStatus;
+                }
+
+            } catch (redisErr) {
+                console.warn('Redis overlay failed, using DB values:', redisErr.message);
+            }
+        }
+
         res.json({
             message: 'Auction fetched successfully',
             data: auction
         });
+        
     } catch (err) {
         console.error('GetAuctionById error:', err);
         res.status(500).json({ message: 'Failed to get auction' });
     }
 };
 
-// Get all auctions for admin (any status)
+// Get all auctions for admin (any status)(only chnage active acution data)(done)
 const getAllAuctionsAdmin = async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 20;
         const offset = (page - 1) * limit;
 
-        // Use repository - no status filter for admin
+        // 1. Fetch ALL data from DB (No status filter for admins)
         const auctions = await AuctionRepo.getAllAuctions(con, {
             limit,
             offset
         });
+
+        // 2. Overlay Redis Data (Price, Bids, AND Status)
+        // Use Promise.all for speed
+        await Promise.all(auctions.map(async (auction) => {
+            // Only check Redis if DB thinks it's active.
+            // If DB says 'cancelled', it's definitely cancelled.
+            if (auction.status === 'active') {
+                try {
+                    const pipe = redis.pipeline();
+                    
+                    pipe.get(`auction:${auction.id}:current_bid`);
+                    pipe.hget(`auction:${auction.id}:meta`, 'total_bids');
+                    pipe.hget(`auction:${auction.id}:meta`, 'status'); // <--- CRITICAL FOR ADMINS
+
+                    const results = await pipe.exec();
+
+                    // Extract results: [[err, val], [err, val], ...]
+                    const currentBid = results[0][1];
+                    const totalBids = results[1][1];
+                    const redisStatus = results[2][1];
+
+                    if (currentBid) {
+                        auction.current_bid = parseFloat(currentBid);
+                    }
+                    if (totalBids) {
+                        auction.total_bids = parseInt(totalBids);
+                    }
+                    
+                    // Force the UI to show 'Cancelled' if Redis knows it's cancelled
+                    // This prevents the Admin from seeing "Active" right after deleting.
+                    if (redisStatus && redisStatus !== auction.status) {
+                        auction.status = redisStatus;
+                    }
+
+                } catch (redisErr) {
+                    // For Admin lists, we generally DON'T want to fail the whole request
+                    // just because Redis is glitchy. We log it and show the DB data.
+                    console.error(`Admin List: Redis skip for auction ${auction.id}`, redisErr);
+                }
+            }
+        }));
 
         const totalItems = await AuctionRepo.getAuctionCount(con, {});
         const activeCount = await AuctionRepo.getAuctionCount(con, { status: 'active' });
@@ -387,54 +550,189 @@ const getAllAuctionsAdmin = async (req, res) => {
     }
 };
 
-// Activate auction - Admin Only
-const activateAuction = async (req, res) => {
-    const { id } = req.params;
+//  1. CORE LOGIC (Reusable for Admin & Cron)(done)
+const activateAuctionCore = async (auctionId) => {
     const client = await con.connect();
-
     try {
         await client.query('BEGIN');
 
-        // Use repository to fetch and lock
-        const auction = await AuctionRepo.lockAndGetAuction(client, id);
+        // A. Lock & Fetch
+        const auction = await AuctionRepo.lockAndGetAuction(client, auctionId);
 
         if (!auction) {
             await client.query('ROLLBACK');
-            return res.status(404).json({ message: 'Auction not found' });
+            return { success: false, error: 'NOT_FOUND', status: 404 };
         }
 
-        // Validation
+        // B. Validation
         if (auction.status !== 'pending') {
             await client.query('ROLLBACK');
-            return res.status(400).json({ message: 'Only pending auctions can be activated' });
+            return { success: false, error: 'Auction is not pending', status: 400 };
         }
-
+        
+        // (Optional: Check start time only if triggered by Cron? 
+        //  Usually admin override is allowed, but let's keep strict for now)
         if (new Date(auction.end_time) <= new Date()) {
             await client.query('ROLLBACK');
-            return res.status(400).json({ message: 'End time has passed. Cannot activate.' });
+            return { success: false, error: 'Auction end time passed', status: 400 };
         }
 
-        // Activate using repository
-        const activatedAuction = await AuctionRepo.activateAuction(client, id, auction.version);
+        // C. Update DB
+        const activatedAuction = await AuctionRepo.activateAuction(client, auctionId);
 
-        if (!activatedAuction) {
-            await client.query('ROLLBACK');
-            return res.status(409).json({ message: 'Version conflict' });
-        }
+        // if (!activatedAuction) {
+        //     await client.query('ROLLBACK');
+        //     return { success: false, error: 'Version Conflict', status: 409 };
+        // }
 
         await client.query('COMMIT');
 
-        // Real-time update
+        // D. Seed Redis (Critical for performance)
+        try {
+            await CauctionCache(activatedAuction);
+        } catch (redisErr) {
+            console.error(`[ActivateCore] Redis Seed Failed for #${auctionId}:`, redisErr);
+        }
+
+        // E. Real-time Notification
         emitAuctionUpdate(activatedAuction);
 
-        res.status(200).json({ message: 'Auction activated!', auction: activatedAuction });
+        return { success: true, data: activatedAuction };
 
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error('Activate Error:', err);
-        res.status(500).json({ message: 'Internal server error' });
+        console.error(`[ActivateCore] Error for #${auctionId}:`, err);
+        return { success: false, error: err.message, status: 500 };
     } finally {
         client.release();
+    }
+};
+
+//  2. HTTP HANDLER (For Admin API)(done)
+const activateAuction = async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // Call the reusable core function
+        const result = await activateAuctionCore(id);
+
+        if (!result.success) {
+            return res.status(result.status || 500).json({ message: result.error });
+        }
+
+        res.status(200).json({ 
+            message: 'Auction activated successfully', 
+            auction: result.data 
+        });
+
+    } catch (err) {
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+}
+
+//done
+const endAuctionCore = async (auctionId) => {
+    try {
+        const pipe = redis.pipeline();
+        pipe.hgetall(`auction:${auctionId}:meta`);       // status, total_bids, seller_id
+        pipe.get(`auction:${auctionId}:current_bid`);     // final price
+        pipe.get(`auction:${auctionId}:winner_id`);       // winner user ID
+
+        const results = await pipe.exec();
+
+        const meta       = results[0][1];   // { status, total_bids, seller_id, ... }
+        const currentBid = results[1][1];   // "5000" (string)
+        const winnerId   = results[2][1];   // "17" (string) or null
+
+        // Guard: Auction doesn't exist in Redis
+        if (!meta ) {
+            return { success: false, error: 'Auction not found in cache' };
+        }
+
+        // Guard: Already ended
+        if (meta.status === 'sold' || meta.status === 'ended' || meta.status === 'cancelled') {
+            return { success: false, error: `Auction already ${meta.status}` };
+        }
+
+        const totalBids = parseInt(meta.total_bids) || 0;
+        const newStatus = (totalBids > 0 && winnerId) ? 'sold' : 'expired';
+
+
+        await redis.hset(`auction:${auctionId}:meta`, 'status', newStatus);
+        // Set TTL to auto-cleanup after 24 hours
+        await redis.expire(`auction:${auctionId}:meta`, 86400);
+        await redis.expire(`auction:${auctionId}:current_bid`, 86400);
+        await redis.expire(`auction:${auctionId}:winner_id`, 86400);
+
+
+        let winner = null;
+        let seller = null;
+
+        // We need emails, so we query Users DB
+        if (newStatus === 'sold' && winnerId) {
+            const winnerRes = await con.query(
+                "SELECT id, email, username FROM users WHERE id = $1",
+                [parseInt(winnerId)]
+            );
+            winner = winnerRes.rows[0];
+        }
+
+        // Get seller email
+        if (meta.seller_id) {
+            const sellerRes = await con.query(
+                "SELECT id, email, username FROM users WHERE id = $1",
+                [parseInt(meta.seller_id)]
+            );
+            seller = sellerRes.rows[0];
+        }
+
+        publishStatusChange({
+            type: 'END_AUCTION_COMMAND',
+            auctionId: parseInt(auctionId),
+            newStatus,
+            winnerId: winnerId ? parseInt(winnerId) : null,
+            finalPrice: currentBid ? parseFloat(currentBid) : 0,
+            timestamp: Date.now()
+        });
+
+        if (newStatus === 'sold' && winner && seller) {
+            // A. Email to Winner
+            sendEmailQueue({
+                to: winner.email,
+                subject: `🎉 You Won: Auction #${auctionId}`,
+                html: `<h2>Congratulations ${winner.username}!</h2>
+                       <p>You won the auction with a bid of ₹${parseFloat(currentBid).toLocaleString('en-IN')}.</p>`
+            });
+
+            // B. Email to Seller
+            sendEmailQueue({
+                to: seller.email,
+                subject: `✅ Auction Sold: #${auctionId}`,
+                html: `<h2>Your auction was sold!</h2>
+                       <p>Winner: ${winner.username}</p>
+                       <p>Final Price: ₹${parseFloat(currentBid).toLocaleString('en-IN')}</p>`
+            });
+        } else if (seller) {
+            // C. Email to Seller (Expired)
+            sendEmailQueue({
+                to: seller.email,
+                subject: `⏰ Auction Expired: #${auctionId}`,
+                html: `<h2>Your auction expired with no bids.</h2>`
+            });
+        }
+
+        emitAuctionUpdate({
+            id: parseInt(auctionId),
+            status: newStatus,
+            winner_id: winnerId ? parseInt(winnerId) : null,
+            current_bid: currentBid ? parseFloat(currentBid) : 0
+        });
+
+        return { success: true, status: newStatus };
+
+    } catch (err) {
+        console.error(`[EndCore] Error closing #${auctionId}:`, err);
+        return { success: false, error: err.message };
     }
 };
 
@@ -446,5 +744,9 @@ module.exports = {
     getUserAuctions,
     getAuctionById,
     getAllAuctionsAdmin,
-    activateAuction
+    activateAuctionCore,
+    activateAuction,
+    activateAuctionCore,
+    cancelAuction,
+     endAuctionCore
 };

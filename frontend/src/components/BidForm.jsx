@@ -4,7 +4,7 @@ import { bidAPI } from '../services/api';
 
 const BidForm = ({ auctionId, currentBid, minIncrement = 1, onBidPlaced }) => {
     const [bidAmount, setBidAmount] = useState('');
-    const [currentHighestBid, setCurrentHighestBid] = useState(currentBid);
+    const [currentHighestBid, setCurrentHighestBid] = useState(Number(currentBid) || 0);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
@@ -12,7 +12,7 @@ const BidForm = ({ auctionId, currentBid, minIncrement = 1, onBidPlaced }) => {
 
     // Sync when prop changes
     useEffect(() => {
-        setCurrentHighestBid(currentBid);
+        setCurrentHighestBid(Number(currentBid) || 0);
     }, [currentBid]);
 
     // Listen for real-time bid updates

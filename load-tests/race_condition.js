@@ -1,68 +1,88 @@
 import http from 'k6/http';
-import { check } from 'k6';
+import { Counter } from 'k6/metrics';
 
+// ==============================================================================
+// 1. CONFIGURATION
+// ==============================================================================
 const BASE_URL = 'http://localhost:3000/api'; 
-const AUCTION_ID = 21; 
+const AUCTION_ID = 28; 
+const FIXED_BID_AMOUNT = 2000; // Starting bid to test
+
+const successfulBids = new Counter('successful_bids');
+const failedBids = new Counter('failed_bids');
 
 export const options = {
     scenarios: {
-        precision_test: {
-            executor: 'per-vu-iterations',
-            vus: 10,  // 10 extremely fast users
-            iterations: 5, // Each sends 5 rapid-fire bids
-            maxDuration: '10s',
+        atomic_race_condition: {
+            executor: 'constant-arrival-rate',
+            rate: 500,               // Total 500 bids
+            timeUnit: '1s',          // Start them all within 1 second
+            duration: '1s',          // Total test length
+            preAllocatedVUs: 500,    // Prepare all 500 users in memory
+            maxVUs: 1000,
         },
     },
 };
 
+// ==============================================================================
+// 2. SETUP (Pre-login all users)
+// ==============================================================================
 export function setup() {
-    const users = [
-        { email: 'test3@gmail.com', password: '123456' }, 
-        { email: 'test2@gmail.com', password: '123456' }
-    ];
     const tokens = [];
+    console.log(`🔑 Logging in 500 users...`);
 
-    users.forEach((u) => {
-        const res = http.post(`${BASE_URL}/auth/login`, JSON.stringify(u), {
-            headers: { 'Content-Type': 'application/json' },
-        });
-        if (res.status === 200) {
-            const body = res.json();
-            let token = body.token || body.accessToken || (body.data && body.data.token);
-            if (!token && res.cookies.token) token = res.cookies.token[0].value;
+    for (let i = 1; i <= 500; i++) {
+        const res = http.post(`${BASE_URL}/auth/login`, JSON.stringify({
+            email: `ved${i}@example.com`,
+            password: '123456'
+        }), { headers: { 'Content-Type': 'application/json' } });
+
+        if (res.status === 200 || res.status === 201) {
+            let token = res.cookies.accessToken ? res.cookies.accessToken[0].value : res.json().token;
             if (token) tokens.push(token);
         }
-    });
-    return { tokens }; 
+    }
+    console.log(`✅ ${tokens.length} users ready for the race.`);
+    return { tokens };
 }
 
+// ==============================================================================
+// 3. THE ATOMIC HIT
+// ==============================================================================
 export default function (data) {
-    const token = data.tokens[(__VU - 1) % data.tokens.length];
-    if (!token) return;
+    // Each request gets its own unique token from the setup data
+    const token = data.tokens[Math.floor(Math.random() * data.tokens.length)];
 
-    const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}` 
+    const params = {
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'Cookie': `accessToken=${token}`
+        },
     };
 
-    // 1. Get current price
-    const getRes = http.get(`${BASE_URL}/auction/${AUCTION_ID}`, { headers });
-    const auction = getRes.json();
-    const currentBid = parseFloat((auction.data && auction.data.current_bid) || auction.current_bid || auction.starting_bid || 0);
+    const payload = JSON.stringify({ bid_amount: FIXED_BID_AMOUNT });
+    
+    // The actual "Hammer" hit
+    const res = http.post(`${BASE_URL}/bids/create/${AUCTION_ID}`, payload, params);
 
-    // 2. Bid significantly higher to avoid 400 errors (we want 201s to analyze timestamps)
-    // Adding a huge random buffer ensures we aren't rejected by "stale" reads
-    const myBidAmount = currentBid + 1000 + (Math.floor(Math.random() * 10000));
-
-    const payload = JSON.stringify({ bid_amount: myBidAmount });
-    const res = http.post(`${BASE_URL}/bids/create/${AUCTION_ID}`, payload, { headers });
-
-    // 3. 🔬 ANALYZE THE TIMESTAMP
-    if (res.status === 201) {
-        const body = res.json();
-        const dbTime = body.bid.placed_at; // Format: 2026-02-01T06:27:13.123456Z
-
-        // Log the exact microsecond string
-        console.log(`⏱️ VU ${__VU} Success | DB Time: ${dbTime}`);
+    // ==============================================================================
+   // ==============================================================================
+    // 4. ANALYSIS 
+    // ==============================================================================
+    if (res.status === 201 || res.status === 200) {
+        successfulBids.add(1);
+        // Force log the winner
+        console.log(`🏆 [DEBUG] WINNER FOUND! User: ved${__VU} | Status: ${res.status}`);
+    } else {
+        failedBids.add(1);
+        
+        // Print the reason for EVERY failure until we find the problem
+        // Once you find the reason, you can add back the "if (failedBids.value <= 10)" check
+        console.log(`❌ [DEBUG] FAILED (VU ${__VU}): Status ${res.status} | Body: ${res.body}`);
+        
+        if (res.status === 0) {
+            console.error(`🚨 [DEBUG] NETWORK ERROR: Check if your server crashed!`);
+        }
     }
 }

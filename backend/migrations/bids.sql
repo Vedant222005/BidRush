@@ -1,20 +1,14 @@
-CREATE TYPE bid_status AS ENUM ('placed', 'winning', 'outbid', 'cancelled');
+CREATE TYPE bid_status AS ENUM ('placed', 'winning', 'outbid', 'won', 'expired', 'cancelled', 'refunded', 'rejected');
 
 CREATE TABLE bids (
     id SERIAL PRIMARY KEY,
     auction_id INT NOT NULL REFERENCES auctions(id) ON DELETE CASCADE,
-    bidder_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    
+    bidder_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, 
     amount DECIMAL(12,2) NOT NULL,
     
     -- Status & Metadata
     status bid_status DEFAULT 'placed',
-    is_auto_bid BOOLEAN DEFAULT FALSE,
     idempotency_key VARCHAR(255) UNIQUE, -- Prevents duplicate processing
-    
-    -- Security/Audit
-    ip_address INET, -- Postgres native type for IP addresses
-    user_agent TEXT,
     
     placed_at TIMESTAMPTZ DEFAULT NOW(),
     

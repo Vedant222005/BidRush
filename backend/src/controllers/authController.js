@@ -3,10 +3,11 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const UserRepo = require('../repositories/userRepository');
 const { emitNewUser } = require('../webSocket/socketServer');
-const crypto=require('crypto');
+const crypto = require('crypto');
+const redis = require('../config/redis');
 
+//done
 const register = async (req, res) => {
-  const client = await con.connect();
   try {
     const { username, email, password, full_name } = req.body;
 
@@ -14,19 +15,15 @@ const register = async (req, res) => {
       return res.status(400).json({ message: 'All required fields must be provided' });
     }
 
-    await client.query('BEGIN');
-
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Use repository instead of direct query
-    const user = await UserRepo.createUser(client, {
+    const user = await UserRepo.createUser(con, {
       username,
       email,
       password_hash: hashedPassword,
       full_name
     });
-
-    await client.query('COMMIT');
 
     emitNewUser(user);
 
@@ -36,8 +33,6 @@ const register = async (req, res) => {
     });
 
   } catch (err) {
-    await client.query('ROLLBACK');
-
     // PostgreSQL unique constraint violation error code
     if (err.code === '23505') {
       if (err.constraint === 'users_email_key') {
@@ -50,11 +45,10 @@ const register = async (req, res) => {
     }
 
     res.status(500).json({ message: 'Failed to register user' });
-  } finally {
-    client.release();
   }
 };
 
+//done
 const login = async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -86,7 +80,7 @@ const login = async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-         // ... validation & password check passed ...
+    // ... validation & password check passed ...
 
     // 1. Generate Tokens
     const accessToken = jwt.sign(
@@ -94,7 +88,7 @@ const login = async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: '15m' } // Short life!
     );
-    
+
     // Random secure string for refresh token
     const refreshToken = crypto.randomBytes(40).toString('hex');
 
@@ -129,23 +123,24 @@ const login = async (req, res) => {
     res.json({
       message: 'Login successful',
       user: {
-      id: user.id,
-      username: user.username,
-      email: user.email,
-      role: user.role
-    }
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role
+      }
     });
 
-    
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to login' });
   }
 };
 
+//done
 const logout = async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
-  
+
   if (refreshToken) {
     const refreshHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
     await con.query('DELETE FROM refresh_tokens WHERE token_hash = $1', [refreshHash]);
@@ -155,15 +150,29 @@ const logout = async (req, res) => {
   res.json({ message: 'Logout successful' });
 };
 
+//redis (done)
 const getMe = async (req, res) => {
   try {
     const user_id = req.user.id;
 
-    // Use repository instead of direct query
+    // Use repository to get user info from DB
     const user = await UserRepo.getUserById(con, user_id);
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Fetch balance from Redis (real-time) with DB fallback
+    let balance;
+    try {
+      balance = await redis.get(`user:${user_id}:balance`);
+      if (balance === null) {
+        // Redis miss - use DB balance and cache it
+        balance = user.balance;
+        await redis.set(`user:${user_id}:balance`, String(balance));
+      }
+    } catch (redisErr) {
+      balance = user.balance;
     }
 
     res.json({
@@ -172,7 +181,7 @@ const getMe = async (req, res) => {
         username: user.username,
         email: user.email,
         full_name: user.full_name,
-        balance: user.balance,
+        balance: parseFloat(balance),
         role: user.role
       }
     });
@@ -182,16 +191,40 @@ const getMe = async (req, res) => {
   }
 };
 
-// Admin only: Get all users with pagination
+// Admin only: Get all users with pagination(update balance from redis)(done)
 const getAllUsers = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
-    // Use repository for both queries
+    // 1. Fetch Users from Database (Base Data)
     const users = await UserRepo.getAllUsers(con, limit, offset);
     const totalItems = await UserRepo.getUserCount(con);
+
+    // 2. Fetch Live Balances from Redis (Optimized)
+    if (users.length > 0) {
+      const pipe = redis.pipeline();
+
+      // Queue up a GET command for every user in the list
+      users.forEach(user => {
+        pipe.get(`user:${user.id}:balance`);
+      });
+
+      // Execute all commands in one go
+      const results = await pipe.exec();
+
+      // 3. Merge Redis Balance into User Object
+      users.forEach((user, index) => {
+        // ioredis returns [error, result]. We take the result (index 1).
+        const redisBalance = results[index][1];
+
+        // If Redis has a balance, use it. Otherwise, keep the DB balance.
+        if (redisBalance !== null) {
+          user.balance = parseFloat(redisBalance); // Update the specific field
+        }
+      });
+    }
 
     res.json({
       message: 'Users fetched successfully',
@@ -203,13 +236,14 @@ const getAllUsers = async (req, res) => {
         limit
       }
     });
+
   } catch (err) {
-    console.error(err);
+    console.error("GetAllUsers Error:", err);
     res.status(500).json({ message: 'Failed to fetch users' });
   }
 };
 
-// Admin only: Ban user
+// Admin only: Ban user (done)
 const banUser = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -230,7 +264,7 @@ const banUser = async (req, res) => {
   }
 };
 
-// Admin only: Unban user
+// Admin only: Unban user (done)
 const unbanUser = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -251,10 +285,11 @@ const unbanUser = async (req, res) => {
   }
 };
 
+//done
 const refresh = async (req, res) => {
   try {
     const { refreshToken } = req.cookies;
-    
+
     if (!refreshToken) return res.status(401).json({ message: 'No refresh token' });
 
     // Hash it to verify against DB

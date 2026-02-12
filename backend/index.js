@@ -8,6 +8,11 @@ const cookieParser = require('cookie-parser');
 const { createServer } = require('http');
 const { initSocket } = require('./src/webSocket/socketServer');
 const uploadRoutes = require('./src/routes/upload');
+const { connectRabbitMQ } = require('./src/config/rabbitmq');
+const { startBidConsumer } = require('./src/queues/bids/bidconsumer');
+const { startStatusConsumer } = require('./src/queues/status/statusconsumer');
+const { startEmailConsumer } = require('./src/queues/email/emailConsumer');
+const { startAuctionScheduler } = require('./src/jobs/auctionSchedular');
 
 dotenv.config();
 
@@ -100,10 +105,32 @@ app.use('/api/auction', auctionRoutes);
 app.use('/api/bids', bidRoutes);
 app.use('/api/upload', uploadRoutes);
 
-//listen on server
-server.listen(port, () => {
-  console.log(`server is running on port ${port}`);
-})
+//listen on server with RabbitMQ initialization
+async function startServer() {
+  try {
+    // 1. Connect RabbitMQ first
+    await connectRabbitMQ();
+
+    // 2. Start consumers
+    await startBidConsumer();
+    await startStatusConsumer();
+    await startEmailConsumer();
+    console.log('✅ RabbitMQ consumers started');
+
+    // 3. Start Auction Scheduler (Cron Job)
+    startAuctionScheduler();
+    console.log('⏰ Auction scheduler started');
+    // 4. Start HTTP server
+    server.listen(port, () => {
+      console.log(`🚀 Server is running on port ${port}`);
+    });
+  } catch (err) {
+    console.error('❌ Failed to start server:', err);
+    process.exit(1);
+  }
+}
+
+startServer();
 
 
 
